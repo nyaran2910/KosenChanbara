@@ -482,7 +482,10 @@ public sealed class PhoneControllerHub : MonoBehaviour
     private IEnumerator CreateOffer(SlotState slot)
     {
         RTCConfiguration rtcConfiguration = default;
-        rtcConfiguration.iceServers = Array.Empty<RTCIceServer>();
+        rtcConfiguration.iceServers = new[]
+        {
+            new RTCIceServer { urls = new[] { "stun:stun.l.google.com:19302" } }
+        };
         RTCPeerConnection peer = new RTCPeerConnection(ref rtcConfiguration);
         slot.Peer = peer;
         slot.RemoteDescriptionSet = false;
@@ -490,7 +493,7 @@ public sealed class PhoneControllerHub : MonoBehaviour
 
         peer.OnIceCandidate = candidate =>
         {
-            if (slot.Peer != peer || candidate == null || candidate.Type != RTCIceCandidateType.Host)
+            if (slot.Peer != peer || candidate == null)
             {
                 return;
             }
@@ -638,8 +641,7 @@ public sealed class PhoneControllerHub : MonoBehaviour
         SlotState slot = GetSlot(message.Value<string>("slot"));
         JObject candidateObject = message["candidate"] as JObject;
         string candidateText = candidateObject?.Value<string>("candidate");
-        if (slot?.Peer == null || string.IsNullOrEmpty(candidateText) ||
-            candidateText.IndexOf(" typ host", StringComparison.OrdinalIgnoreCase) < 0)
+        if (slot?.Peer == null || string.IsNullOrEmpty(candidateText))
         {
             return;
         }

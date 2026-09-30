@@ -17,7 +17,7 @@ docker run --rm --name kosen-controller -p 127.0.0.1:8080:8080 --mount "type=bin
 
 ## 3. ゲームを開始
 
-PCとスマホを同じWi-Fiへ接続して `BattleGround` を再生します。QRを読み、「センサーを使う」を押した後、スマホを指定姿勢にして「リセンター」を押します。
+`BattleGround` を再生してQRを読み、「センサーを使う」を押した後、スマホを指定姿勢にして「リセンター」を押します。PCとスマホが別のWi-FiでもSTUNで直接接続を試みますが、ネットワークによってはTURNサーバーの設定が別途必要です。
 
 Wi-Fiの端末間通信制限を無効にし、Windows FirewallではUnityのプライベートネットワーク通信を許可してください。
 
