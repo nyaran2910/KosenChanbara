@@ -1,0 +1,6 @@
+{
+  "name": "SchoolFestival.Combat.EditModeTests",
+  "references": ["SchoolFestival.Combat"],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "includePlatforms": ["Editor"]
+}

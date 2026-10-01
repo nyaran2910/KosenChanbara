@@ -1,0 +1,5 @@
+{
+  "name": "SchoolFestival.Combat.PlayModeTests",
+  "references": ["SchoolFestival.Combat", "Unity.InputSystem", "Unity.ugui", "Unity.RenderPipelines.Universal.Runtime"],
+  "optionalUnityReferences": ["TestAssemblies"]
+}

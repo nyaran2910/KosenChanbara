@@ -20,12 +20,16 @@ public sealed class MotionController : MonoBehaviour
     private double previousSampleTimestampMilliseconds;
     private bool hasPreviousSample;
     private float angularSpeedDegrees;
+    private bool poseValid;
 
     public ControllerSlot Slot => slot;
     public bool IsConnected => hub != null && hub.IsConnected(slot);
     public bool IsStale => hub == null || hub.IsStale(slot);
-    public bool GuardHeld => hub != null && hub.GuardHeld(slot);
-    public float AngularSpeedDegrees => IsStale ? 0f : angularSpeedDegrees;
+    public bool IsPoseValid => poseValid && !IsStale;
+    public int PoseGeneration { get; private set; }
+    public Quaternion CurrentLocalRotation { get; private set; } = UprightStanceRotation;
+    public bool GuardHeld => IsPoseValid && hub != null && hub.GuardHeld(slot);
+    public float AngularSpeedDegrees => IsPoseValid ? angularSpeedDegrees : 0f;
 
     private void Awake()
     {
@@ -48,11 +52,13 @@ public sealed class MotionController : MonoBehaviour
             hasObservedMotionSequence = false;
             hasPreviousSample = false;
             angularSpeedDegrees = 0f;
+            poseValid = false;
+            PoseGeneration++;
         }
 
         if (hub.IsStale(slot) || !hub.TryGetLatestSample(slot, out MotionSample sample) || !sample.OrientationValid)
         {
-            angularSpeedDegrees = 0f;
+            InvalidatePose();
             return;
         }
 
@@ -72,7 +78,18 @@ public sealed class MotionController : MonoBehaviour
         }
 
         Quaternion relativeRotation = Quaternion.Inverse(referenceRotation) * sample.Rotation;
-        transform.localRotation = baseRotation * relativeRotation;
+        CurrentLocalRotation = baseRotation * relativeRotation;
+        poseValid = true;
+    }
+
+    private void InvalidatePose()
+    {
+        if (poseValid)
+            PoseGeneration++;
+        poseValid = false;
+        angularSpeedDegrees = 0f;
+        hasPreviousSample = false;
+        hasObservedMotionSequence = false;
     }
 
     private void UpdateAngularSpeed(MotionSample sample)
@@ -112,6 +129,8 @@ public sealed class MotionController : MonoBehaviour
     public void Recenter()
     {
         hasReference = false;
+        InvalidatePose();
+        PoseGeneration++;
         hub?.Recenter(slot);
     }
 

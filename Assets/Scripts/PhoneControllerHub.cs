@@ -60,6 +60,7 @@ public sealed class PhoneControllerHub : MonoBehaviour
     {
         public RawImage QrImage;
         public Text GuardText;
+        public Text StatusText;
     }
 
     private static PhoneControllerHub instance;
@@ -71,6 +72,17 @@ public sealed class PhoneControllerHub : MonoBehaviour
     private CancellationTokenSource cancellation;
     private ClientWebSocket signalingSocket;
     private ConnectionConfig config;
+    private GameObject overlay;
+
+    public bool OverlayVisible => overlay != null && overlay.activeSelf;
+
+    public void SetOverlayVisible(bool visible)
+    {
+        if (overlay != null)
+            overlay.SetActive(visible);
+        if (!visible && EventSystem.current != null)
+            EventSystem.current.SetSelectedGameObject(null);
+    }
 
     public static PhoneControllerHub EnsureInstance()
     {
@@ -759,6 +771,7 @@ public sealed class PhoneControllerHub : MonoBehaviour
     private void CreateOverlay()
     {
         GameObject canvasObject = new GameObject("Phone Controller Overlay", typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
+        overlay = canvasObject;
         canvasObject.transform.SetParent(transform, false);
         Canvas canvas = canvasObject.GetComponent<Canvas>();
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;
@@ -774,8 +787,8 @@ public sealed class PhoneControllerHub : MonoBehaviour
                 .transform.SetParent(transform, false);
         }
 
-        CreateSlotCard(canvasObject.transform, 0, new Vector2(16, -16), new Vector2(0, 1), new Vector2(0, 1));
-        CreateSlotCard(canvasObject.transform, 1, new Vector2(-16, -16), new Vector2(1, 1), new Vector2(1, 1));
+        CreateSlotCard(canvasObject.transform, 0, new Vector2(-225, 220), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 1));
+        CreateSlotCard(canvasObject.transform, 1, new Vector2(225, 220), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 1));
     }
 
     private void CreateSlotCard(Transform parent, int index, Vector2 position, Vector2 anchor, Vector2 pivot)
@@ -787,7 +800,7 @@ public sealed class PhoneControllerHub : MonoBehaviour
         cardRect.anchorMax = anchor;
         cardRect.pivot = pivot;
         cardRect.anchoredPosition = position;
-        cardRect.sizeDelta = new Vector2(370, 455);
+        cardRect.sizeDelta = new Vector2(370, 490);
 
         Text title = CreateText(card.transform, slots[index].Id.ToUpperInvariant(), 32, TextAnchor.MiddleCenter);
         title.rectTransform.anchoredPosition = new Vector2(0, -16);
@@ -809,10 +822,15 @@ public sealed class PhoneControllerHub : MonoBehaviour
         guardText.rectTransform.sizeDelta = new Vector2(340, 44);
         views[index].GuardText = guardText;
 
-        Button recenter = CreateButton(card.transform, "RECENTER", new Vector2(-88, -410));
+        Text status = CreateText(card.transform, "Waiting for QR", 18, TextAnchor.MiddleCenter);
+        status.rectTransform.anchoredPosition = new Vector2(0, -370);
+        status.rectTransform.sizeDelta = new Vector2(350, 42);
+        views[index].StatusText = status;
+
+        Button recenter = CreateButton(card.transform, "RECENTER", new Vector2(-88, -445));
         ControllerSlot capturedSlot = (ControllerSlot)index;
         recenter.onClick.AddListener(() => Recenter(capturedSlot));
-        Button rotate = CreateButton(card.transform, "NEW QR", new Vector2(88, -410));
+        Button rotate = CreateButton(card.transform, "NEW QR", new Vector2(88, -445));
         rotate.onClick.AddListener(() => RotateSlot(capturedSlot));
     }
 
@@ -863,6 +881,8 @@ public sealed class PhoneControllerHub : MonoBehaviour
         {
             SlotState slot = slots[index];
             SlotView view = views[index];
+            if (view.StatusText != null)
+                view.StatusText.text = slot.Status;
             if (view.QrImage != null && view.QrImage.texture != slot.QrTexture)
             {
                 view.QrImage.texture = slot.QrTexture;
