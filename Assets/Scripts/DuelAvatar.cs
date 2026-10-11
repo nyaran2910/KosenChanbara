@@ -23,9 +23,9 @@ public sealed class DuelAvatar
     private float defeatFloor;
     private static Mesh gloveMesh;
     private float stepOffset, stepFrom, stepTo, stepElapsed, stepLift;
-    private bool stepping, stepArmed, hasMotionBaseline, swingPlayed, suppressStepEffects;
-    private Vector3 swingOrigin;
-    private float quietSeconds, previousForwardAngle;
+    private bool stepping, stepArmed, hasMotionBaseline, suppressStepEffects;
+    private readonly AttackStroke feedbackStroke = new AttackStroke();
+    private Vector3 previousSwingDirection = Vector3.up;
     private Vector3 recoilDirection = Vector3.back, recoveryDirection;
     private bool recoveringFeet, suppressRecoveryEffects;
     private int recoveryLandings, landingLeg;
@@ -44,6 +44,7 @@ public sealed class DuelAvatar
     private double reactionGuardChanged = -100;
     public Vector3 ChestOffset => chest == null ? Vector3.zero : player.InverseTransformPoint(chest.position) - restChest;
     public Vector3 HeadPosition => head != null ? head.TransformPoint(headTopOffset) : player.position + player.up;
+    public Vector3 ChestCenter => restChest + ChestOffset;
     public bool IsStanding => player != null && visual != null && player.gameObject.activeInHierarchy && !falling && !defeated;
     public bool Stepped { get; private set; }
     public bool Swung { get; private set; }
@@ -514,10 +515,12 @@ public sealed class DuelAvatar
         bool guardRecoilActive = now >= guardRecoilStart && now < guardRecoilStart + ReactionSwordPose.GuardDurationSeconds;
         if (!staggerActive && !guardRecoilActive)
         {
-            TrackSwing(direction, speed, guard, dt, forward);
+            TrackSwing(direction, speed, guard, dt, forward, now);
             if (!recoveringFeet && now >= thrustStart + thrustSeconds && movingLeg < 0)
                 AdvanceStep(dt, forward, guard, speed);
         }
+        if (staggerActive || guardRecoilActive)
+        { TrackSuppressedSwing(direction, speed, guard, now); }
         UpdateGrounding(dt, bodyTravel, kneeReaction);
         if (staggerActive || guardRecoilActive)
             // Defence takes effect immediately during recovery. Both hands
@@ -657,35 +660,24 @@ public sealed class DuelAvatar
         }
     }
 
-    private void TrackSwing(Vector3 direction, float speed, bool guard, float dt, float forward)
+    private void TrackSwing(Vector3 direction, float speed, bool guard, float dt, float forward, double now)
     {
-        // The player's local forward points at the opponent. Blade motion
-        // around that axis changes the stance without making a forward cut.
-        float forwardAngle = Vector3.Angle(Vector3.forward, direction);
-        float approachSpeed = (previousForwardAngle - forwardAngle) / Mathf.Max(dt, 0.0001f);
-        previousForwardAngle = forwardAngle;
-        if (!hasMotionBaseline || guard || celebrating)
-        {
-            swingOrigin = direction; swingPlayed = false; quietSeconds = 0f;
-            stepArmed = !guard && !celebrating && forward < 0.2f;
-            hasMotionBaseline = true;
-            return;
-        }
-        quietSeconds = speed < 65f ? quietSeconds + dt : 0f;
-        if (quietSeconds >= 0.12f)
-        {
-            swingOrigin = direction;
-            swingPlayed = false;
-        }
-        // Only play while sweeping toward the opponent through the attack
-        // cone. Raising the blade, sideways stance changes, twists and gyro
-        // spikes remain silent. Rearm only after a quiet interval.
-        if (!swingPlayed && speed >= 100f && Vector3.Angle(swingOrigin, direction) >= 22f
-            && forwardAngle <= DuelMatch.AttackAngle && approachSpeed >= DuelMatch.MinimumSpeed)
-        {
-            Swung = true;
-            swingPlayed = true;
-        }
+        var pose = new CombatPose(Vector3.zero, previousSwingDirection, Vector3.zero, direction,
+            Vector3.zero, Vector3.forward, Vector3.zero, Vector3.zero, Vector3.forward);
+        feedbackStroke.Update(new CombatInput(Vector3.Angle(Vector3.forward, direction), speed, guard),
+            pose, now, celebrating);
+        previousSwingDirection = direction;
+        Swung |= feedbackStroke.StartedKind == AttackKind.Cut;
+        if (!hasMotionBaseline)
+        { stepArmed = !guard && !celebrating && forward < .2f; hasMotionBaseline = true; }
+    }
+
+    private void TrackSuppressedSwing(Vector3 direction, float speed, bool guard, double now)
+    {
+        var pose = new CombatPose(Vector3.zero, previousSwingDirection, Vector3.zero, direction,
+            Vector3.zero, Vector3.forward, Vector3.zero, Vector3.zero, Vector3.forward);
+        feedbackStroke.Update(new CombatInput(Vector3.Angle(Vector3.forward, direction), speed, guard), pose, now, true);
+        previousSwingDirection = direction;
     }
 
     private void AdvanceStep(float dt, float forward, bool guard, float speed)
@@ -723,12 +715,12 @@ public sealed class DuelAvatar
 
     public void ClearMotionHistory()
     {
-        hasMotionBaseline = swingPlayed = stepArmed = false;
+        hasMotionBaseline = stepArmed = false;
+        feedbackStroke.Reset(); previousSwingDirection = Vector3.up;
         // Finish placing the foot naturally, but do not replay the old gesture's
         // landing sound/dust after resume, recenter or a controller change.
         suppressStepEffects = true;
         suppressRecoveryEffects = true;
-        quietSeconds = 0f;
         Swung = Stepped = false; thrustSoundPending = false;
     }
 

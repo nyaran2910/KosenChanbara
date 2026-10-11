@@ -32,7 +32,38 @@ namespace SchoolFestival.Combat
 
         public const float BladeStart = .55f, BladeLength = 2.1f, BodyRadius = .43f;
         public const float BladePadding = .23f, ThrustExtraPadding = .1f;
-        public const float GuardPadding = .34f;
+        public const float GuardPadding = .34f, GuardBladeStart = .30f;
+        // Reconstruction tolerances, not published Nintendo implementation values.
+        public const float GuardCrossingAngle = 45f;
+
+        public static Vector3 IncomingCutDirection(CombatPose attack)
+        {
+            Vector3 direction = Vector3.Cross(Vector3.Cross(attack.PreviousBlade, attack.Blade), attack.Forward);
+            if (direction.sqrMagnitude < .0000000001f)
+                direction = Vector3.ProjectOnPlane(attack.CutDirection, attack.Forward);
+            return direction.normalized;
+        }
+
+        private static bool CutCrossesGuard(CombatPose attack, Vector3 guardedBlade, Vector3 defenceForward)
+        {
+            Vector3 cut = Vector3.ProjectOnPlane(IncomingCutDirection(attack), defenceForward);
+            Vector3 blade = Vector3.ProjectOnPlane(guardedBlade.normalized, defenceForward);
+            if (cut.sqrMagnitude < .000001f || blade.sqrMagnitude < .01f) return false;
+            float angle = Vector3.Angle(cut, blade);
+            return Mathf.Min(angle, 180f - angle) >= GuardCrossingAngle - .001f;
+        }
+
+        private static void Sample(CombatPose pose, float fraction, out Vector3 grip, out Vector3 blade)
+        {
+            grip = Vector3.Lerp(pose.PreviousGrip, pose.Grip, fraction);
+            blade = Vector3.Slerp(pose.PreviousBlade, pose.Blade, fraction).normalized;
+        }
+
+        public static SwordPose SampleSwordPose(CombatPose pose, Quaternion currentRotation, float fraction)
+        {
+            Sample(pose, Mathf.Clamp01(fraction), out Vector3 grip, out Vector3 blade);
+            return new SwordPose(grip, Quaternion.FromToRotation(pose.Blade, blade) * currentRotation);
+        }
 
         public static CombatContactResult Resolve(AttackKind kind, CombatPose attack, CombatPose defence, bool guard)
         {
@@ -43,24 +74,39 @@ namespace SchoolFestival.Combat
                 kind == AttackKind.Thrust ? ThrustExtraPadding : 0f);
             bool facing = Vector3.Dot(attack.BodyCenter - defence.BodyCenter, defence.Forward) > 0f;
             bool ready = guard && facing;
-            if (ready && kind == AttackKind.Thrust && body
-                && TrySweptBladeTouchesBlade(attack.PreviousGrip, attack.PreviousBlade, attack.Grip, attack.Blade,
-                    defence.Grip, defence.Blade, out _))
+            float guardHit = float.PositiveInfinity;
+            bool intercepted = ready && TryGuardInterception(kind, attack, defence,
+                body ? bodyHit : 1f, out guardHit);
+            if (intercepted && (kind == AttackKind.Cut || body))
+                return new CombatContactResult(CombatOutcome.GuardSuccess, guardHit);
+            if (ready && kind == AttackKind.Cut && body && !TouchesGuardHilt(attack, defence, bodyHit)
+                && GuardCoversCut(attack, defence, bodyHit))
                 return new CombatContactResult(CombatOutcome.GuardSuccess, bodyHit);
-            // A held guard blocks through its finite blade. Cut velocity includes
-            // forward travel and authored aiming corrections, so an extra
-            // velocity-angle gate unfairly rejects real sword interceptions.
-            if (ready && kind == AttackKind.Cut)
-            {
-                if (TrySweptBladeTouchesBlade(attack.PreviousGrip, attack.PreviousBlade, attack.Grip, attack.Blade,
-                    defence.Grip, defence.Blade, out float guardHit))
-                    return new CombatContactResult(CombatOutcome.GuardSuccess, guardHit);
-                if (body && !TouchesGuardHilt(attack, defence)
-                    && GuardInterceptsCommittedCut(attack.Grip, attack.Blade, attack.EndGrip,
-                    attack.EndBlade, defence.Grip, defence.Blade))
-                    return new CombatContactResult(CombatOutcome.GuardSuccess, bodyHit);
-            }
             return body ? new CombatContactResult(ready ? CombatOutcome.GuardBreak : CombatOutcome.Hit, bodyHit) : default;
+        }
+
+        public static Vector3 ContactPoint(CombatResult result, CombatPose first, CombatPose second)
+        {
+            Sample(first, result.ContactFraction, out Vector3 a, out Vector3 u);
+            Sample(second, result.ContactFraction, out Vector3 b, out Vector3 v);
+            if (result.Outcome == CombatOutcome.Clash)
+                return SwordContact.ClosestMidpoint(a + u * BladeStart, a + u * BladeLength,
+                    b + v * BladeStart, b + v * BladeLength);
+            CombatPose defence = result.Attacker == 0 ? second : first;
+            Vector3 grip = result.Attacker == 0 ? a : b, blade = result.Attacker == 0 ? u : v;
+            if (result.Outcome == CombatOutcome.GuardSuccess)
+            {
+                Vector3 guardedGrip = result.Attacker == 0 ? b : a, guardedBlade = result.Attacker == 0 ? v : u;
+                SwordContact.ClosestPoints(grip + blade * BladeStart, grip + blade * BladeLength,
+                    guardedGrip + guardedBlade * GuardBladeStart, guardedGrip + guardedBlade * BladeLength,
+                    out _, out Vector3 onGuard);
+                return onGuard;
+            }
+            SwordContact.ClosestPoints(grip + blade * BladeStart, grip + blade * BladeLength,
+                defence.BodyCenter - Vector3.up * .48f, defence.BodyCenter + Vector3.up * .48f,
+                out Vector3 onBlade, out Vector3 onBody);
+            Vector3 normal = (onBlade - onBody).normalized;
+            return onBody + normal * BodyRadius;
         }
 
         public static bool BladesClash(CombatPose first, CombatPose second)
@@ -128,23 +174,30 @@ namespace SchoolFestival.Combat
         public static bool TrySweptBladeTouchesBlade(Vector3 previousGrip, Vector3 previousDirection,
             Vector3 grip, Vector3 direction, Vector3 guardGrip, Vector3 guardDirection, out float fraction)
         {
+            var attack = new CombatPose(previousGrip, previousDirection, grip, direction,
+                Vector3.zero, Vector3.forward, Vector3.zero, grip, direction);
+            var defence = new CombatPose(guardGrip, guardDirection, guardGrip, guardDirection,
+                Vector3.zero, Vector3.back, Vector3.zero, guardGrip, guardDirection);
+            return TryGuardInterception(AttackKind.None, attack, defence, 1f, out fraction);
+        }
+
+        private static bool TryGuardInterception(AttackKind kind, CombatPose attack, CombatPose defence,
+            float until, out float fraction)
+        {
             fraction = float.PositiveInfinity;
-            Vector3 guardAxis = guardDirection.normalized;
-            if (guardAxis.sqrMagnitude < .5f) return false;
-            Vector3 guardStart = guardGrip + guardAxis * BladeStart;
-            Vector3 guardEnd = guardGrip + guardAxis * BladeLength;
-            int steps = Mathf.Max(1, Mathf.CeilToInt(Vector3.Angle(previousDirection, direction) / 5f),
-                Mathf.CeilToInt(Vector3.Distance(previousGrip, grip) / .08f));
-            for (int i = 0; i <= steps; i++)
+            int steps = Mathf.Max(SweepSteps(attack), SweepSteps(defence));
+            int samples = Mathf.CeilToInt(Mathf.Clamp01(until) * steps);
+            for (int i = 0; i <= samples; i++)
             {
-                float t = (float)i / steps;
-                Vector3 origin = Vector3.Lerp(previousGrip, grip, t);
-                Vector3 axis = Vector3.Slerp(previousDirection, direction, t).normalized;
+                float t = Mathf.Min((float)i / steps, until);
+                Sample(attack, t, out Vector3 origin, out Vector3 axis);
+                Sample(defence, t, out Vector3 guardGrip, out Vector3 guardAxis);
+                if (guardAxis.sqrMagnitude < .5f
+                    || kind == AttackKind.Cut && !CutCrossesGuard(attack, guardAxis, defence.Forward)) continue;
+                Vector3 guardStart = guardGrip + guardAxis * GuardBladeStart;
+                Vector3 guardEnd = guardGrip + guardAxis * BladeLength;
                 Vector3 a = origin + axis * BladeStart, b = origin + axis * BladeLength;
-                // A flat base prevents the generous blade radius extending into
-                // the hilt/hand. Only the blade side of this plane can block.
-                float da = Vector3.Dot(a - guardStart, guardAxis);
-                float db = Vector3.Dot(b - guardStart, guardAxis);
+                float da = Vector3.Dot(a - guardStart, guardAxis), db = Vector3.Dot(b - guardStart, guardAxis);
                 if (da < 0f && db < 0f) continue;
                 if (da < 0f) a = Vector3.Lerp(a, b, -da / (db - da));
                 else if (db < 0f) b = Vector3.Lerp(a, b, da / (da - db));
@@ -154,26 +207,55 @@ namespace SchoolFestival.Combat
             return false;
         }
 
-        private static bool TouchesGuardHilt(CombatPose attack, CombatPose defence)
+        private static int SweepSteps(CombatPose pose)
+            => Mathf.Max(1, Mathf.CeilToInt(Vector3.Angle(pose.PreviousBlade, pose.Blade) / 5f),
+                Mathf.CeilToInt(Vector3.Distance(pose.PreviousGrip, pose.Grip) / .08f));
+
+        private static bool GuardCoversCut(CombatPose attack, CombatPose defence, float impact)
+        {
+            Sample(defence, impact, out Vector3 grip, out Vector3 blade);
+            Vector3 forward = defence.Forward.normalized;
+            if ((grip - defence.BodyCenter).sqrMagnitude > 4f
+                || Vector3.Dot(grip - defence.BodyCenter, forward) < .1f
+                || !CutCrossesGuard(attack, blade, forward)) return false;
+            Sample(attack, impact, out Vector3 attackGrip, out Vector3 attackBlade);
+            SwordContact.ClosestPoints(attackGrip + attackBlade * BladeStart,
+                attackGrip + attackBlade * BladeLength, defence.BodyCenter - Vector3.up * .48f,
+                defence.BodyCenter + Vector3.up * .48f, out Vector3 center, out _);
+            Vector3 start = Vector3.ProjectOnPlane(grip + blade * GuardBladeStart - center, forward);
+            Vector3 end = Vector3.ProjectOnPlane(grip + blade * BladeLength - center, forward);
+            Vector3 cut = Vector3.ProjectOnPlane(IncomingCutDirection(attack), forward).normalized;
+            Vector3 normal = Vector3.Cross(forward, cut).normalized;
+            float first = Vector3.Dot(start, normal), last = Vector3.Dot(end, normal);
+            float divisor = first - last;
+            if (Mathf.Abs(divisor) < .000001f) return false;
+            float along = first / divisor;
+            // The broad tolerance may extend beyond the tip, never backwards
+            // through the flat blade base into the excluded hand and guard.
+            if (along < 0f) return false;
+            return Mathf.Abs(Mathf.Lerp(first, last, Mathf.Min(1f, along))) <= GuardPadding;
+        }
+
+        private static bool TouchesGuardHilt(CombatPose attack, CombatPose defence, float until)
         {
             // Exported handle/pommel: -.24..+.20m, guard: +.22..+.29m.
-            // A predicted continuation must never turn a real hilt strike
-            // into a successful blade guard.
-            Vector3 axis = defence.Blade.normalized;
-            Vector3 start = defence.Grip - axis * .24f, end = defence.Grip + axis * .29f;
-            int steps = Mathf.Max(1, Mathf.CeilToInt(Vector3.Angle(attack.PreviousBlade, attack.Blade) / 5f),
-                Mathf.CeilToInt(Vector3.Distance(attack.PreviousGrip, attack.Grip) / .08f));
-            for (int i = 0; i <= steps; i++)
+            // Chest-front coverage must never turn a real hilt strike into
+            // a successful blade guard.
+            int steps = Mathf.Max(SweepSteps(attack), SweepSteps(defence));
+            int samples = Mathf.CeilToInt(Mathf.Clamp01(until) * steps);
+            for (int i = 0; i <= samples; i++)
             {
-                float t = (float)i / steps;
-                Vector3 grip = Vector3.Lerp(attack.PreviousGrip, attack.Grip, t);
-                Vector3 blade = Vector3.Slerp(attack.PreviousBlade, attack.Blade, t).normalized;
+                float t = Mathf.Min((float)i / steps, until);
+                Sample(attack, t, out Vector3 grip, out Vector3 blade);
+                Sample(defence, t, out Vector3 guardGrip, out Vector3 guardBlade);
+                Vector3 start = guardGrip - guardBlade * .24f, end = guardGrip + guardBlade * .29f;
                 if (SwordContact.DistanceSquared(grip + blade * BladeStart,
                     grip + blade * BladeLength, start, end) <= GuardPadding * GuardPadding) return true;
             }
             return false;
         }
 
+        // Legacy geometry utility: Resolve never predicts unfinished movement.
         public static bool GuardInterceptsCommittedCut(Vector3 grip, Vector3 blade, Vector3 endGrip,
             Vector3 endBlade, Vector3 guardGrip, Vector3 guardBlade)
             => endBlade.sqrMagnitude >= .5f && TrySweptBladeTouchesBlade(grip, blade, endGrip, endBlade, guardGrip, guardBlade, out _);

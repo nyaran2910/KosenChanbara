@@ -33,15 +33,17 @@ namespace SchoolFestival.Combat
         public readonly int PushedPlayer;
         public readonly float SignedPush;
         public readonly float HitStopSeconds;
+        public readonly float ContactFraction;
         public readonly AttackKind Kind;
 
-        public CombatResult(CombatOutcome outcome, int attacker, int pushedPlayer, float signedPush, AttackKind kind = AttackKind.Cut)
+        public CombatResult(CombatOutcome outcome, int attacker, int pushedPlayer, float signedPush, AttackKind kind = AttackKind.Cut, float contactFraction = 1f)
         {
             Outcome = outcome;
             Attacker = attacker;
             PushedPlayer = pushedPlayer;
             SignedPush = signedPush;
             Kind = kind;
+            ContactFraction = Mathf.Clamp01(contactFraction);
             HitStopSeconds = outcome == CombatOutcome.Hit || outcome == CombatOutcome.GuardBreak
                 ? DuelMatch.HitStopSeconds : DuelMatch.GuardStopSeconds;
         }
@@ -75,8 +77,8 @@ namespace SchoolFestival.Combat
         public CombatResult Step(CombatInput first, CombatInput second, CombatPose firstPose, CombatPose secondPose, double now)
         {
             bool blocked = Winner != MatchWinner.None || IsResolving(now);
-            bool firstAttack = gates[0].Update(first, now, blocked || IsStunned(0, now));
-            bool secondAttack = gates[1].Update(second, now, blocked || IsStunned(1, now));
+            bool firstAttack = gates[0].Update(first, firstPose, now, blocked || IsStunned(0, now));
+            bool secondAttack = gates[1].Update(second, secondPose, now, blocked || IsStunned(1, now));
             if (!firstAttack && !secondAttack)
                 return default;
 
@@ -93,9 +95,11 @@ namespace SchoolFestival.Combat
                 if (CombatReaction.IsHit(result.Outcome))
                     recoveringUntil[result.PushedPlayer] = stunnedUntil[result.PushedPlayer];
             }
-            // Input during the reaction cannot be saved up as the next swing.
-            gates[0].Reset();
-            gates[1].Reset();
+            // Preserve the observed stroke through hit stop so continuing the
+            // same movement cannot score twice. Blocked updates still observe
+            // a genuine reversal or rest without queuing another attack.
+            gates[0].Interrupt();
+            gates[1].Interrupt();
             return result;
         }
 

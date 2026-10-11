@@ -174,7 +174,10 @@ public sealed class ShowdownEnemyBehaviourPlayTests
             object player = Field<object>(master, "first");
             CombatPose defence = (CombatPose)Call(master, "PlayerDefencePose", player);
             Vector3 grip = defence.BodyCenter + Player.forward * 2f;
-            var cut = new CombatPose(grip, Player.right, grip, -Player.forward,
+            // Author a genuinely vertical swing. A right-to-forward arc is a
+            // horizontal cut and adds sideways recoil, so the NPC needs real
+            // turn time before another attack can pass its facing gate.
+            var cut = new CombatPose(grip, Player.up, grip, -Player.forward,
                 Field<GameObject>(npc, "Root").transform.position, -Player.forward, -Player.up, grip, -Player.forward);
             CombatResult hit = CombatExchange.Resolve(AttackKind.None, AttackKind.Cut, defence, cut, false, false).Contact;
             Assert.That(hit.Outcome, Is.EqualTo(CombatOutcome.Hit), "The continuous mode follows a real shared-geometry hit.");

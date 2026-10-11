@@ -21,8 +21,8 @@ public sealed class CombatContactTests
     }
 
     [TestCase(.2f, false)]
-    [TestCase(.54f, false)]
-    [TestCase(.56f, true)]
+    [TestCase(.29f, false)]
+    [TestCase(.31f, true)]
     [TestCase(1f, true)]
     public void GuardPaddingDoesNotExtendIntoTheHand(float height, bool blocks)
     {
@@ -216,13 +216,13 @@ public sealed class CombatContactTests
         Assert.That(stroke.Update(new CombatInput(21f, 5f), .11d), Is.False);
         stroke.Update(new CombatInput(90f, 0f), .2d);
         stroke.Update(new CombatInput(45f, 80f), .21d);
-        Assert.That(stroke.Update(new CombatInput(20f, 5f), 1d), Is.False);
-        stroke.Update(new CombatInput(90f, 0f), 1.1d);
-        stroke.Update(new CombatInput(45f, 80f), 1.11d);
-        Assert.That(stroke.Update(new CombatInput(20f, 5f, true), 1.12d), Is.False);
-        Assert.That(stroke.Update(new CombatInput(10f, 5f), 1.13d), Is.False);
-        Assert.That(stroke.Update(new CombatInput(0f, 0f, valid: false, thrustRequested: true), 1.2d), Is.False);
-        Assert.That(stroke.Update(new CombatInput(0f, 0f, poseGeneration: 2, thrustRequested: true), 1.3d), Is.True);
+        Assert.That(stroke.Update(new CombatInput(20f, 5f), .21d + AttackStroke.CutSeconds + .01d), Is.False);
+        stroke.Update(new CombatInput(90f, 0f), 1.2d);
+        stroke.Update(new CombatInput(45f, 80f), 1.21d);
+        Assert.That(stroke.Update(new CombatInput(20f, 5f, true), 1.22d), Is.False);
+        Assert.That(stroke.Update(new CombatInput(10f, 5f), 1.23d), Is.False);
+        Assert.That(stroke.Update(new CombatInput(0f, 0f, valid: false, thrustRequested: true), 1.3d), Is.False);
+        Assert.That(stroke.Update(new CombatInput(0f, 0f, poseGeneration: 2, thrustRequested: true), 1.4d), Is.True);
         Assert.That(stroke.Kind, Is.EqualTo(AttackKind.Thrust), "A new controller's explicit fresh impulse is usable without reusing its old cut.");
         stroke.Reset();
         Assert.That(stroke.Update(new CombatInput(25.01f, 0f, thrustRequested: true), 2d), Is.False);

@@ -185,6 +185,9 @@ public sealed partial class DuelPresentation : MonoBehaviour
         => Play(result, now, displacement, displacement);
 
     public void Play(CombatResult result, double now, Vector3 displacement, Vector3 worldCutDirection)
+        => PlayAt(result, now, displacement, worldCutDirection, ContactPoint(result));
+
+    public void PlayAt(CombatResult result, double now, Vector3 displacement, Vector3 worldCutDirection, Vector3 contactPoint)
     {
         ClearFlash();
         int sound;
@@ -212,8 +215,8 @@ public sealed partial class DuelPresentation : MonoBehaviour
         flashUntil = now + FlashSeconds;
         audioSource.PlayOneShot(sounds[sound]);
         Color color = sound == 1 ? Color.cyan : sound == 2 ? new Color(1f, 0.45f, 0.08f) : Color.white;
-        effects.Emit(ContactPoint(result), color, now, false, sound == 2 ? 1.8f : 1.4f);
-        effects.Emit(ContactPoint(result), Color.white, now, false, .65f);
+        effects.Emit(contactPoint, color, now, false, sound == 2 ? 1.8f : 1.4f);
+        effects.Emit(contactPoint, Color.white, now, false, .65f);
         impactAt = now; impactTint = color;
         for (int i = 0; i < 2; i++)
         {
@@ -334,15 +337,14 @@ public sealed partial class DuelPresentation : MonoBehaviour
     }
     private Vector3 ContactPoint(CombatResult result)
     {
-        if (result.Outcome == CombatOutcome.Hit)
+        CombatPose Pose(int index)
         {
-            int defender = result.PushedPlayer, attacker = 1 - defender;
-            Vector3 center = players[defender].position + players[defender].TransformVector(new Vector3(0f, 0.1f, 0f));
-            return SwordContact.ClosestMidpoint(swords[attacker].position, swords[attacker].position + swords[attacker].forward * 2.1f,
-                center - Vector3.up * 0.4f, center + Vector3.up * 0.65f);
+            Vector3 grip = swords[index].position, blade = swords[index].forward;
+            Vector3 body = players[index].TransformPoint(avatars[index].ChestCenter);
+            return new CombatPose(grip, blade, grip, blade, body, players[index].forward,
+                Vector3.zero, grip, blade);
         }
-        return SwordContact.ClosestMidpoint(swords[0].position, swords[0].position + swords[0].forward * 2.1f,
-            swords[1].position, swords[1].position + swords[1].forward * 2.1f);
+        return CombatContact.ContactPoint(result, Pose(0), Pose(1));
     }
 
     private void ClearFlash()

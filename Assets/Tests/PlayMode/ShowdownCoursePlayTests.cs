@@ -96,12 +96,10 @@ public sealed class ShowdownCoursePlayTests
         float angle = Vector3.Angle(attack.CutDirection, defence.Blade);
         bool blade = CombatContact.TrySweptBladeTouchesBlade(attack.PreviousGrip, attack.PreviousBlade,
             attack.Grip, attack.Blade, defence.Grip, defence.Blade, out float guardFraction);
-        bool committed = CombatContact.GuardInterceptsCommittedCut(attack.Grip, attack.Blade,
-            attack.EndGrip, attack.EndBlade, defence.Grip, defence.Blade);
         bool body = CombatContact.TrySweptBladeTouchesBody(attack.PreviousGrip, attack.PreviousBlade,
             attack.Grip, attack.Blade, defence.BodyCenter, out float bodyFraction);
         return $" Cut/guard angle={Mathf.Min(angle, 180f - angle):F2}, "
-            + $"blade contact={blade} ({guardFraction:F3}), committed contact={committed}, "
+            + $"blade contact={blade} ({guardFraction:F3}), "
             + $"body contact={body} ({bodyFraction:F3}), "
             + $"shared guarded outcome={CombatContact.Resolve(AttackKind.Cut, attack, defence, true).Outcome}; "
             + $"attack grip={attack.Grip:F3}, blade={attack.Blade:F3}, cut={attack.CutDirection:F3}, "
@@ -302,9 +300,15 @@ public sealed class ShowdownCoursePlayTests
         {
             Transform root = ((GameObject)RuntimeField(enemies[i], "Root")).transform;
             root.position = Player.position + Player.forward * (i < 2 ? 2.5f : -1.5f);
+            root.rotation = Quaternion.LookRotation(i < 2 ? -Player.forward : Player.forward);
+            SetRuntimeField(enemies[i], "GuardOctant", 0);
             SetRuntimeField(enemies[i], "Hearts", 3);
             SetRuntimeField(enemies[i], "StunnedUntil", 100d);
             SetRuntimeField(enemies[i], "NextAttack", 100d);
+            // Stagger allows defence; use a vertical guard parallel to this
+            // vertical cut so a legitimate guard does not hide the hit test.
+            Call(master, "UpdateNpcGuard", enemies[i], 0f);
+            PublishNpcGuardHistory(enemies[i]);
         }
         Transform sword = (Transform)RuntimeField(Field<object>(master, "first"), "Sword");
         void Stroke(float angle, bool guard = false, bool valid = true)
@@ -370,6 +374,14 @@ public sealed class ShowdownCoursePlayTests
         yield return null;
     }
 
+    private static void PublishNpcGuardHistory(object enemy)
+    {
+        Transform root = ((GameObject)RuntimeField(enemy, "Root")).transform;
+        SwordPose pose = (SwordPose)RuntimeField(enemy, "VisualBasePose");
+        SetRuntimeField(enemy, "PreviousGrip", root.TransformPoint(pose.Position));
+        SetRuntimeField(enemy, "PreviousBlade", root.TransformDirection(pose.Direction));
+    }
+
     private void StrikeThroughPhysicalGuard(object enemy, object player, Transform sword, Vector3? fixedIntercept = null)
     {
         CombatPose defence = (CombatPose)Call(master, "NpcCombatPose", enemy);
@@ -398,6 +410,7 @@ public sealed class ShowdownCoursePlayTests
         SetRuntimeField(enemy, "StunnedUntil", Field<double>(master, "matchTime") + .5d);
         SetRuntimeField(enemy, "RecoveryUntil", Field<double>(master, "matchTime") + .5d);
         Call(master, "UpdateNpcGuard", enemy, 0f);
+        PublishNpcGuardHistory(enemy);
         object player = Field<object>(master, "first");
         SetRuntimeField(player, "CutVelocity", Vector3.down);
         Transform sword = (Transform)RuntimeField(player, "Sword");
@@ -614,13 +627,51 @@ public sealed class ShowdownCoursePlayTests
     }
 
     [UnityTest]
+    public IEnumerator ShortCutAndItsReversalDamageWithoutReturningToAnEightyDegreeStance()
+    {
+        Call(master, "SpawnSingleNpc");
+        object npc = Field<IList>(master, "singleNpcs")[0];
+        Transform root = ((GameObject)RuntimeField(npc, "Root")).transform;
+        root.SetPositionAndRotation(Player.position + Player.forward * 2.5f, Quaternion.LookRotation(-Player.forward));
+        SetRuntimeField(npc, "Hearts", 3);
+        SetRuntimeField(npc, "GuardOctant", 0);
+        object player = Field<object>(master, "first");
+        Transform sword = (Transform)RuntimeField(player, "Sword");
+        void Cut(float angle, float speed)
+        {
+            SetRuntimeField(player, "CutVelocity", angle > 10f ? Vector3.up : Vector3.down);
+            sword.position = Player.position + Vector3.up * .15f + Player.forward * .55f;
+            sword.rotation = Quaternion.LookRotation(Quaternion.AngleAxis(-angle, Player.right) * Player.forward, Player.up);
+            UpdateSingleAttackWithManualSword(new CombatInput(angle, speed, false, true, 700));
+        }
+        Cut(35f, 0f);
+        SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + .1d);
+        Cut(10f, 90f);
+        Assert.That(RuntimeField(npc, "Hearts"), Is.EqualTo(2), "A short 25-degree real swing must damage without a raised-sword prerequisite.");
+        Cut(5f, 90f);
+        Assert.That(RuntimeField(npc, "Hearts"), Is.EqualTo(2), "The continuing consumed swing cannot damage twice.");
+        SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + DuelMatch.HitStopSeconds + DuelMatch.PushSeconds + .01d);
+        Call(master, "AdvanceSingleReaction", Field<double>(master, "matchTime"));
+        Cut(5f, 0f);
+        SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + .1d);
+        Cut(35f, 90f);
+        Assert.That(RuntimeField(npc, "Hearts"), Is.EqualTo(1),
+            "A reversed upward cut is a fresh attack; the staggered enemy's parallel vertical guard must not make it immune.");
+        yield return null;
+    }
+
+    [UnityTest]
     public IEnumerator ACommittedStrikeMayDecelerateButSlowStartsStaticBladesAndExpiredCutsCannotHit()
     {
         Call(master, "SpawnSingleNpc");
         object enemy = Field<IList>(master, "singleNpcs")[0];
         Transform root = ((GameObject)RuntimeField(enemy, "Root")).transform;
         root.position = Player.position + Player.forward * 2.5f;
+        root.rotation = Quaternion.LookRotation(-Player.forward);
         SetRuntimeField(enemy, "Hearts", 3); SetRuntimeField(enemy, "StunnedUntil", 100d);
+        SetRuntimeField(enemy, "GuardOctant", 0);
+        Call(master, "UpdateNpcGuard", enemy, 0f);
+        PublishNpcGuardHistory(enemy);
         Transform sword = (Transform)RuntimeField(Field<object>(master, "first"), "Sword");
         void Stroke(float angle, float speed)
         {
@@ -634,20 +685,23 @@ public sealed class ShowdownCoursePlayTests
         Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(2), "A cut committed at the required speed remains valid while slowing toward the body.");
         SetRuntimeField(master, "matchTime", (double)RuntimeField(enemy, "RecoveryUntil") + .01d);
         SetRuntimeField(enemy, "StunnedUntil", 100d);
-        root.position = Player.position + Player.forward * 2.5f;
+        // Begin the next real stroke out of reach: raising the sword is a
+        // valid upward cut, not an inert eighty-degree rearm any more.
+        root.position = Player.position + Player.forward * 10f;
         Stroke(80f, 60f); Stroke(45f, 60f);
+        Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(2));
         root.position = Player.position + Player.forward * 1.2f + Vector3.up * .5f;
         Stroke(45f, 0f);
         Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(2), "NPC movement into a stationary blade does not create a strike.");
         root.position = Player.position + Player.forward * 2.5f;
-        SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + .8d);
+        SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + AttackStroke.CutSeconds + .01d);
         Stroke(5f, 8f);
         Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(2), "The committed contact window expires even if the blade later reaches the body.");
         yield return null;
     }
 
     [UnityTest]
-    public IEnumerator NpcGuardInterceptsWithEitherBladeOrientationButDistantBladesCannot()
+    public IEnumerator NpcCrossingGuardInterceptsButParallelAndDistantBladesCannot()
     {
         for (int scenario = 0; scenario < 3; scenario++)
         {
@@ -674,12 +728,13 @@ public sealed class ShowdownCoursePlayTests
             Call(master, "UpdateNpcGuard", enemy, 0f);
             if (scenario == 2) guard.position += Player.right * 4f;
             SetRuntimeField(enemy, "VisualBasePose", new SwordPose(guard.localPosition, guard.localRotation));
+            PublishNpcGuardHistory(enemy);
             object player = Field<object>(master, "first");
             SetRuntimeField(player, "CutVelocity", Vector3.down);
             Transform sword = (Transform)RuntimeField(player, "Sword");
             StrikeThroughPhysicalGuard(enemy, player, sword, intercept);
-            Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(scenario < 2 ? 3 : 2),
-                "Either nearby blade orientation blocks when its blade intercepts; a distant blade cannot. Scenario " + scenario);
+            Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(scenario == 0 ? 3 : 2),
+                "The crossing blade blocks, while a parallel or distant blade must not. Scenario " + scenario);
         }
         yield return null;
     }
@@ -707,6 +762,75 @@ public sealed class ShowdownCoursePlayTests
             }
             Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(stroke == 0 ? 3 : 2),
                 "Only the cut through the displayed chest should contact the enemy.");
+        }
+        yield return null;
+    }
+
+    [UnityTest]
+    public IEnumerator FourBasicCutDirectionsCrossBothPlayerAndNpcGuardsWhileParallelGuardsBreak()
+    {
+        Call(master, "SpawnSingleNpc");
+        object npc = Field<IList>(master, "singleNpcs")[0];
+        object player = Field<object>(master, "first");
+        Transform npcRoot = ((GameObject)RuntimeField(npc, "Root")).transform;
+        Player.rotation = Quaternion.Euler(0f, 37f, 0f);
+        // UpdateNpcGuard requires a nonzero direction to the player. Keeping
+        // both roots coincident would leave the old waiting sword unchanged.
+        npcRoot.SetPositionAndRotation(Player.position + Player.forward * 3f, Player.rotation);
+        SetRuntimeField(master, "singleActiveNpc", npc);
+        SetRuntimeField(npc, "AttackTimer", -1f);
+        SetRuntimeField(npc, "ContinuousAttack", false);
+        object avatar = RuntimeField(npc, "Avatar");
+        Vector3 chestOffset = (Vector3)avatar.GetType().GetProperty("ChestOffset").GetValue(avatar);
+        SetRuntimeField(npc, "ChestCenter", (Vector3)Call(master, "PlayerChestCenter", player) - chestOffset);
+        foreach (Vector3 localCut in new[] { Vector3.down, Vector3.up, Vector3.left, Vector3.right })
+        foreach (bool crossing in new[] { true, false })
+        {
+            Vector3 guardDirection = crossing
+                ? Mathf.Abs(localCut.y) > .5f ? Vector3.right : Vector3.up
+                : localCut;
+            int octant = guardDirection == Vector3.up ? 0 : guardDirection == Vector3.right ? 2
+                : guardDirection == Vector3.down ? 4 : 6;
+            SetRuntimeField(npc, "GuardOctant", octant);
+            Call(master, "UpdateNpcGuard", npc, 0f);
+            SwordPose npcGuard = (SwordPose)RuntimeField(npc, "VisualBasePose");
+            SetRuntimeField(npc, "PreviousGrip", npcRoot.TransformPoint(npcGuard.Position));
+            SetRuntimeField(npc, "PreviousBlade", npcRoot.TransformDirection(npcGuard.Direction));
+            SetRuntimeField(player, "TargetRotation", Quaternion.FromToRotation(Vector3.forward, guardDirection));
+            Call(master, "UpdatePose", player, true);
+            SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + GuardPoseTransition.DurationSeconds + .01d);
+            Call(master, "UpdatePose", player, true);
+            // This fixture holds a settled guard. Establish its source and
+            // guard-generation baseline instead of interpolating from the
+            // unrelated setup sword pose during the incoming cut.
+            SetRuntimeField(player, "CombatBaseline", false);
+            Call(master, "PlayerCombatPose", player, new CombatInput(90f, 0f, true, true, 1300 + octant), false);
+            CombatPose playerDefence = (CombatPose)Call(master, "PlayerDefencePose", player);
+            CombatPose npcDefence = (CombatPose)Call(master, "NpcCombatPose", npc);
+            // A guard changes only defence geometry; it does not receive a
+            // more forgiving attack path depending on whether its owner is AI.
+            foreach (CombatPose defence in new[] { playerDefence, npcDefence })
+            {
+                Vector3 forward = -defence.Forward;
+                Vector3 cut = Player.TransformDirection(localCut);
+                Vector3 grip = defence.BodyCenter + defence.Forward * 1.8f + Vector3.up * .55f;
+                Vector3 previous = (forward * Mathf.Cos(20f * Mathf.Deg2Rad)
+                    - cut * Mathf.Sin(20f * Mathf.Deg2Rad)).normalized;
+                var attack = new CombatPose(grip, previous, grip, forward,
+                    defence.BodyCenter + defence.Forward * 2.4f, forward, cut,
+                    grip + Vector3.up * 20f, Vector3.back);
+                CombatOutcome expected = crossing ? CombatOutcome.GuardSuccess : CombatOutcome.GuardBreak;
+                CombatResult fromPlayer = CombatExchange.Resolve(AttackKind.Cut, AttackKind.None,
+                    attack, defence, false, true).Contact;
+                CombatResult fromNpc = CombatExchange.Resolve(AttackKind.None, AttackKind.Cut,
+                    defence, attack, true, false).Contact;
+                Assert.That(fromPlayer.Outcome, Is.EqualTo(expected),
+                    "Player attack must use the tutorial's crossing rule. Cut " + localCut + ", crossing " + crossing);
+                Assert.That(fromNpc.Outcome, Is.EqualTo(expected),
+                    "NPC and duel's reverse role must obey the same crossing rule. Cut " + localCut + ", crossing " + crossing);
+                Assert.That(fromPlayer.Attacker, Is.EqualTo(0));
+                Assert.That(fromNpc.Attacker, Is.EqualTo(1));
+            }
         }
         yield return null;
     }
@@ -779,6 +903,9 @@ public sealed class ShowdownCoursePlayTests
                 Assert.That(Vector3.Dot(contactAttack.BodyCenter - contactDefence.BodyCenter, contactDefence.Forward),
                     Is.LessThan(0f), "The attacker must still be behind the defender at the actual contact.");
             Assert.That(resolved, Is.True, "The real cut must resolve in scenario " + scenario + " at dt " + dt + " and distance " + distance);
+            if (scenario >= 8)
+                Assert.That(shouldBlock, Is.False,
+                    "Parallel, unheld, invalid, distant and rear guards must not become successful defences. Scenario " + scenario);
             Assert.That(Run.Hearts, Is.EqualTo(shouldBlock ? ShowdownProgress.MaxHearts : ShowdownProgress.MaxHearts - (held ? 1 : 2)),
                 "Single uses the same finite blade guard as duel; selecting guard alone must not cover the hands or distant blade. Scenario "
                 + scenario + " at dt " + dt + " and distance " + distance + DescribeCutGuardContact(contactAttack, contactDefence));
@@ -972,8 +1099,8 @@ public sealed class ShowdownCoursePlayTests
             var pose = (CombatPose)Call(master, "NpcCombatPose", enemy);
             Assert.That(Vector3.Distance(sword.localPosition, end.Position), Is.LessThan(.0001f));
             Assert.That(Quaternion.Angle(sword.localRotation, end.Rotation), Is.LessThan(.01f));
-            Assert.That(Vector3.Angle(pose.PreviousBlade, root.forward), Is.EqualTo(DuelMatch.AttackAngle).Within(.05f),
-                "Only the portion entering duel's attack cone contributes to contact.");
+            Assert.That(Vector3.Angle(pose.PreviousBlade, root.TransformDirection(start.Direction)), Is.LessThan(.05f),
+                "A coarse frame must preserve the full real ready-to-end sweep, including its observed entry into the forward region.");
             Vector3 remembered = Vector3.up;
             SwordPose committed = SwordPoseMath.Calculate(Quaternion.identity, false, settings, ref remembered);
             Assert.That(Vector3.Distance(pose.EndGrip, root.TransformPoint(committed.Position)), Is.LessThan(.0001f));

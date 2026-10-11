@@ -167,7 +167,9 @@ public sealed class BattleGroundPlayTests
                 if (hit < hitsToWin - 1)
                 {
                     yield return HoldUntil(() => Vector3.Angle(sword.transform.forward, player.transform.forward) >= 89.9f,
-                        returnToStance);
+                        returnToStance, attacker == 0 ? Key.LeftShift : Key.RightShift);
+                    // Upward cuts are real attacks too. Raise under guard when
+                    // this fixture intends a non-attacking return to stance.
                     SetKeys();
                     yield return null;
                 }
@@ -620,13 +622,13 @@ public sealed class BattleGroundPlayTests
                 AssertSwingTrajectory(avatar, fps, t => Quaternion.AngleAxis(90f * t, Vector3.forward) * upright,
                     180f, 0, "Upright to sideways stance");
                 AssertSwingTrajectory(avatar, fps, t => Quaternion.Euler(-90f * t, 0f, 0f),
-                    180f, 0, "Raising the blade away from the opponent");
+                    180f, 1, "Upward cut starting near the opponent");
                 AssertSwingTrajectory(avatar, fps, t => Quaternion.AngleAxis(180f * t, Vector3.forward) * Quaternion.Euler(-30f, 0f, 0f),
-                    360f, 0, "Changing sideways tilt inside the forward cone");
+                    360f, 1, "Short side arc inside the forward cone");
                 AssertSwingTrajectory(avatar, fps, t => Quaternion.AngleAxis(180f * t, Vector3.forward),
                     360f, 0, "Twisting around the blade");
                 AssertSwingTrajectory(avatar, fps, t => Quaternion.Euler(-90f + 90f * t, 0f, 0f),
-                    60f, 0, "Slow forward stance change");
+                    60f, 1, "Cut above the shared forty-degree speed threshold");
                 AssertSwingTrajectory(avatar, fps, t => Quaternion.Euler(-90f + 90f * t, 0f, 0f),
                     180f, 1, "Vertical cut");
                 AssertSwingTrajectory(avatar, fps, t => Quaternion.Euler(0f, -90f + 180f * t, 0f),
