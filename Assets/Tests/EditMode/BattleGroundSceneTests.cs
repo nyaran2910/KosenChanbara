@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Reflection;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -6,6 +7,47 @@ using UnityEngine;
 
 public sealed class BattleGroundSceneTests
 {
+    [TestCase(true)]
+    [TestCase(false)]
+    public void PlayPreparationRepairsAMissingStadiumWithoutOverwritingSceneEdits(bool missingStage)
+    {
+        SceneSetup[] previousSetup = EditorSceneManager.GetSceneManagerSetup();
+        try
+        {
+            var scene = EditorSceneManager.OpenScene("Assets/Scenes/BattleGround.unity");
+            MonoBehaviour master = Object.FindObjectsByType<MonoBehaviour>(FindObjectsSortMode.None)
+                .Single(component => component.GetType().Name == "MasterController" && component.gameObject.scene == scene);
+            var serialized = new SerializedObject(master);
+            Object originalStage = serialized.FindProperty("colosseumStage").objectReferenceValue;
+            // Reproduce the open scene's stale reference while keeping other unsaved settings.
+            serialized.FindProperty("cricketStadiumStage").objectReferenceValue = missingStage ? null : originalStage;
+            serialized.FindProperty("cricketBoundaryRadius").floatValue = 23f;
+            serialized.FindProperty("guardHeight").floatValue = 0.72f;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+            master.transform.position = new Vector3(4f, 0f, -5f);
+            System.Type.GetType("CricketStadiumAssets, Assembly-CSharp-Editor", true)
+                .GetMethod("OnPlayModeChanged", BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, new object[] { PlayModeStateChange.ExitingEditMode });
+            serialized.Update();
+            Object expectedStage = missingStage
+                ? AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Art/Stages/CricketStadium/CricketStadium.prefab")
+                : originalStage;
+            Assert.That(serialized.FindProperty("cricketStadiumStage").objectReferenceValue, Is.EqualTo(expectedStage));
+            Assert.That(serialized.FindProperty("cricketBoundaryRadius").floatValue,
+                missingStage ? Is.GreaterThan(30f).And.LessThan(31f) : Is.EqualTo(23f));
+            Assert.That(serialized.FindProperty("guardHeight").floatValue, Is.EqualTo(0.72f));
+            Assert.That(serialized.FindProperty("colosseumStage").objectReferenceValue, Is.EqualTo(originalStage));
+            Assert.That(master.transform.position, Is.EqualTo(new Vector3(4f, 0f, -5f)));
+        }
+        finally
+        {
+            if (previousSetup.Any(setup => setup.isLoaded && setup.isActive))
+                EditorSceneManager.RestoreSceneManagerSetup(previousSetup);
+            else
+                EditorSceneManager.NewScene(NewSceneSetup.EmptyScene);
+        }
+    }
+
     [Test]
     public void BattleGroundHasAllCombatReferencesAndAHorizontalArena()
     {
@@ -18,6 +60,18 @@ public sealed class BattleGroundSceneTests
             var serialized = new SerializedObject(master);
             foreach (string field in new[] { "Sword1", "Sword2", "PlayerObject1", "PlayerObject2", "arena" })
                 Assert.That(serialized.FindProperty(field).objectReferenceValue, Is.Not.Null, field);
+            foreach (string field in new[] { "characterBodies", "characterBlades" })
+            {
+                SerializedProperty choices = serialized.FindProperty(field);
+                Assert.That(choices.arraySize, Is.EqualTo(field == "characterBodies" ? 24 : 6), field);
+                for (int i = 0; i < choices.arraySize; i++)
+                    Assert.That(choices.GetArrayElementAtIndex(i).objectReferenceValue, Is.Not.Null, field + " " + i);
+            }
+            Assert.That(serialized.FindProperty("characterNames").arraySize, Is.EqualTo(4));
+            Assert.That(serialized.FindProperty("characterChestCenters").arraySize, Is.EqualTo(4));
+            Assert.That(serialized.FindProperty("colosseumStage").objectReferenceValue, Is.Not.Null);
+            Assert.That(serialized.FindProperty("cricketStadiumStage").objectReferenceValue, Is.Not.Null);
+            Assert.That(serialized.FindProperty("cricketBoundaryRadius").floatValue, Is.GreaterThan(15f));
             var arena = (SpriteRenderer)serialized.FindProperty("arena").objectReferenceValue;
             Assert.That(Mathf.Min(arena.bounds.extents.x, arena.bounds.extents.z), Is.GreaterThan(3f));
             Assert.That(Mathf.Abs(Vector3.Dot(arena.transform.forward, Vector3.up)), Is.GreaterThan(0.999f));
@@ -36,6 +90,30 @@ public sealed class BattleGroundSceneTests
         }
     }
 
+    [Test]
+    public void CricketStadiumHasGroundedGrassAndAllFiveUrpTextures()
+    {
+        const string root = "Assets/Art/Stages/CricketStadium/";
+        var stage = AssetDatabase.LoadAssetAtPath<GameObject>(root + "CricketStadium.prefab");
+        Assert.That(stage, Is.Not.Null);
+        Renderer[] renderers = stage.GetComponentsInChildren<Renderer>();
+        Assert.That(renderers.SelectMany(r => r.sharedMaterials).All(m => m != null && m.shader.name == "Universal Render Pipeline/Lit"), Is.True);
+        Renderer grass = renderers.Single(r => r.name == "Ground .009");
+        Assert.That(grass.bounds.max.y, Is.EqualTo(0f).Within(0.001f));
+        Assert.That(grass.bounds.center.x, Is.EqualTo(0f).Within(0.001f));
+        Assert.That(grass.bounds.center.z, Is.EqualTo(0f).Within(0.001f));
+        Assert.That(Mathf.Min(grass.bounds.extents.x, grass.bounds.extents.z), Is.GreaterThan(35f));
+        string[] materials = { "Boundary_texture", "Ground_texture", "Pitch", "Rope_texture", "Scoreboard_screen" };
+        string[] textures = { "Boundary", "Ground", "Pitch", "Rope_02", "Scoreboard" };
+        for (int i = 0; i < materials.Length; i++)
+        {
+            var material = AssetDatabase.LoadAssetAtPath<Material>(root + "Materials/" + materials[i] + ".mat");
+            Assert.That(material, Is.Not.Null, materials[i]);
+            Assert.That(material.GetTexture("_BaseMap"), Is.EqualTo(AssetDatabase.LoadAssetAtPath<Texture2D>(root + textures[i] + ".png")), materials[i]);
+            Assert.That(renderers.Any(r => r.sharedMaterials.Contains(material)), Is.True, materials[i] + " is used by the model");
+        }
+    }
+
     private static Vector3[] WorldPoints(Renderer renderer)
     {
         Mesh mesh;
@@ -50,6 +128,47 @@ public sealed class BattleGroundSceneTests
         Vector3[] points = mesh.vertices.Select(renderer.transform.TransformPoint).ToArray();
         if (baked) Object.DestroyImmediate(mesh);
         return points;
+    }
+
+    [Test]
+    public void AllFourCharactersHaveUsableSkeletonsAndSixMatchingPalettes()
+    {
+        string[] characters = { "Original", "Bald", "Afro", "Robot" };
+        string[] colors = { "Red", "Blue", "Green", "Yellow", "Purple", "Black" };
+        foreach (string character in characters)
+        {
+            Color[] palette = new Color[colors.Length];
+            for (int index = 0; index < colors.Length; index++)
+            {
+                var body = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Art/Chambara/Roster/Prefabs/Chambara" + character + colors[index] + "Body.prefab");
+                var blade = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Art/Chambara/Roster/Prefabs/Chambara" + colors[index] + "Sword.prefab");
+                Assert.That(body, Is.Not.Null);
+                Assert.That(blade, Is.Not.Null);
+                SkinnedMeshRenderer[] skins = body.GetComponentsInChildren<SkinnedMeshRenderer>();
+                Assert.That(skins.Length, Is.GreaterThan(20));
+                foreach (SkinnedMeshRenderer skin in skins)
+                {
+                    Assert.That(skin.name.Contains("Glove") || skin.name.Contains("Cuff"), Is.False);
+                    Assert.That(skin.bones.All(bone => bone != null), Is.True, skin.name);
+                    Assert.That(skin.sharedMesh.bindposes.Length, Is.EqualTo(skin.bones.Length));
+                    Assert.That(skin.sharedMesh.boneWeights.Any(weight => weight.weight0 > 0f), Is.True);
+                    Assert.That(skin.sharedMaterials.All(material => material.shader.name == "Universal Render Pipeline/Lit"), Is.True);
+                }
+                foreach (string bone in new[] { "chest", "hip", "ankle_l", "ankle_r" })
+                    Assert.That(body.GetComponentsInChildren<Transform>().Any(t => t.name == bone), Is.True, character + " " + bone);
+                Material armor = skins.SelectMany(skin => skin.sharedMaterials).First(material => material.name.StartsWith("Armor_") && !material.name.StartsWith("Armor_seams_"));
+                Material sword = blade.GetComponentsInChildren<Renderer>().SelectMany(renderer => renderer.sharedMaterials).First(material => material.name.StartsWith("Padded_sword_"));
+                palette[index] = armor.color;
+                Assert.That(sword.color, Is.EqualTo(armor.color), character + " " + colors[index]);
+            }
+            Assert.That(palette.Distinct().Count(), Is.EqualTo(6), character);
+        }
+        var stage = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Art/Stages/Colosseum/Colosseum.prefab");
+        Assert.That(stage, Is.Not.Null);
+        Renderer terrain = stage.GetComponentInChildren<Renderer>();
+        Assert.That(terrain.sharedMaterial.GetTexture("_BaseMap"), Is.Not.Null);
+        Assert.That(terrain.bounds.size.x, Is.GreaterThan(40f));
+        Assert.That(terrain.bounds.size.z, Is.GreaterThan(35f));
     }
 
     [Test]

@@ -35,6 +35,8 @@ for mat in bpy.data.materials:
     materials.append({'name': mat.name, 'color': [srgb(v) for v in color[:3]] + [color[3]],
                       'roughness': node.inputs['Roughness'].default_value if node else 0.6})
 manifest = {'frame': 30, 'bodyHeight': 2.0, 'gripToTip': 2.1, 'materials': materials, 'characters': []}
+roster = '01_ORIGINAL_RED' in bpy.data.collections
+variants = [(name, f'{index:02d}_{name.upper()}_RED') for index, name in enumerate(['Original', 'Bald', 'Afro', 'Robot'], 1)] if roster else [('Red', '01_RED_character'), ('Blue', '02_BLUE_character')]
 # Unity's baked FBX conversion maps Blender +Y to model +Z. Rotate the
 # source's -Y-facing geometry without reflecting its normals or winding.
 unity_forward = Matrix.Rotation(math.pi, 3, 'Z')
@@ -42,15 +44,16 @@ unity_forward = Matrix.Rotation(math.pi, 3, 'Z')
 # Bake the evaluated frame-30 geometry and pose into a weighted rest rig.
 # Keep source vertex-group indices: subdivision interpolates the original weights.
 # The source blend is read only; gloves, display objects and animation are excluded.
-for color, collection in [('Red', '01_RED_character'), ('Blue', '02_BLUE_character')]:
-    prefix = color.upper() + '_'
+for color, collection in variants:
+    prefix = color.upper() + ('-RED_' if roster else '_')
     objects = [ob for ob in bpy.data.collections[collection].all_objects if ob.type == 'MESH']
     swords = [ob for ob in objects if ob.name.startswith(prefix + 'Sword_') or ob.name.startswith(prefix + 'Grip_wrap')]
-    bodies = [ob for ob in objects if ob not in swords and not ob.name.startswith(prefix + 'Glove')]
+    bodies = [ob for ob in objects if ob not in swords and not ob.name.startswith(prefix + 'Glove') and not (roster and ob.name.startswith(prefix + 'Cuff'))]
     body_points = [p for ob in bodies for p in vertices(ob)]
     floor = min(p.z for p in body_points)
     scale = 2.0 / (max(p.z for p in body_points) - floor)
-    root = bpy.data.objects[prefix + 'Character'].matrix_world.translation
+    source_rig = bpy.data.objects[prefix + 'Rig']
+    root = bpy.data.objects.get(prefix + 'Character', source_rig).matrix_world.translation
     body_origin = Vector((root.x, root.y, floor))
     chest = center(vertices(bpy.data.objects[prefix + 'Chest_guard']))
     chest_center = [0.0, (chest.z - floor) * scale - 1.0, 0.0]
@@ -63,7 +66,6 @@ for color, collection in [('Red', '01_RED_character'), ('Blue', '02_BLUE_charact
     sword_rotation = axis.rotation_difference(Vector((0, -1, 0))).to_matrix()
     manifest['characters'].append({'name': color, 'chestCenter': chest_center,
                                     'guardPlaneOffset': chest_front + 0.08})
-    source_rig = bpy.data.objects[prefix + 'Rig']
     rig_data = bpy.data.armatures.new(prefix + 'RestSkeleton')
     rig = bpy.data.objects.new(prefix + 'Rig', rig_data)
     bpy.context.scene.collection.objects.link(rig)
@@ -84,11 +86,17 @@ for color, collection in [('Red', '01_RED_character'), ('Blue', '02_BLUE_charact
         if bone.name in rig_data.edit_bones and bone.parent and bone.parent.name in rig_data.edit_bones:
             rig_data.edit_bones[bone.name].parent = rig_data.edit_bones[bone.parent.name]
     bpy.ops.object.mode_set(mode='OBJECT')
-    for part, originals in [('Body', bodies), ('Sword', swords)]:
+    parts = [('Body', bodies)] if roster and color != 'Original' else [('Body', bodies), ('Sword', swords)]
+    for part, originals in parts:
         baked = []
         for ob in originals:
             ev = ob.evaluated_get(dg)
             mesh = bpy.data.meshes.new_from_object(ev, preserve_all_data_layers=True, depsgraph=dg)
+            # New roster colors are object-linked overrides of shared meshes.
+            # Resolve the slots before baking, rather than taking the mesh's RED defaults.
+            mesh.materials.clear()
+            for slot in ob.material_slots:
+                mesh.materials.append(slot.material)
             for vertex in mesh.vertices:
                 world = ev.matrix_world @ vertex.co
                 local = (world - body_origin) * scale if part == 'Body' else sword_rotation @ ((world - grip) * sword_scale)
@@ -121,6 +129,6 @@ for color, collection in [('Red', '01_RED_character'), ('Blue', '02_BLUE_charact
         print('EXPORTED', filepath)
     bpy.data.objects.remove(rig, do_unlink=True)
     bpy.data.armatures.remove(rig_data)
-with open(os.path.join(output, 'ChambaraExport.json'), 'w') as file:
+with open(os.path.join(output, 'ChambaraRoster.json' if roster else 'ChambaraExport.json'), 'w') as file:
     json.dump(manifest, file, indent=2)
 print('CHARACTER ANCHORS', manifest['characters'])

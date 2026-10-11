@@ -1,6 +1,13 @@
 using System;
 using UnityEngine;
 
+public enum ControllerInputSource
+{
+    None,
+    Phone,
+    Hardware
+}
+
 public enum ControllerSlot
 {
     P1 = 0,
@@ -14,11 +21,18 @@ public enum MotionDataFlags : byte
     Guard = 1 << 0,
     OrientationValid = 1 << 1,
     GyroscopeValid = 1 << 2,
-    AccelerationValid = 1 << 3
+    AccelerationValid = 1 << 3,
+    RecenterHeld = 1 << 4
 }
 
 public readonly struct MotionSample
 {
+    public MotionSample(Quaternion rotation, Vector3 angularVelocityDegrees, Vector3 linearAcceleration,
+        bool guardHeld, bool orientationValid, bool gyroscopeValid, bool accelerationValid,
+        uint sequence, ushort recenterSequence, double browserTimestampMilliseconds, double receivedRealtime)
+        : this(rotation, angularVelocityDegrees, linearAcceleration, guardHeld, orientationValid,
+            gyroscopeValid, accelerationValid, sequence, recenterSequence, browserTimestampMilliseconds, receivedRealtime, false) { }
+
     public MotionSample(
         Quaternion rotation,
         Vector3 angularVelocityDegrees,
@@ -30,7 +44,8 @@ public readonly struct MotionSample
         uint sequence,
         ushort recenterSequence,
         double browserTimestampMilliseconds,
-        double receivedRealtime)
+        double receivedRealtime,
+        bool recenterHeld)
     {
         Rotation = rotation;
         AngularVelocityDegrees = angularVelocityDegrees;
@@ -43,12 +58,14 @@ public readonly struct MotionSample
         RecenterSequence = recenterSequence;
         BrowserTimestampMilliseconds = browserTimestampMilliseconds;
         ReceivedRealtime = receivedRealtime;
+        RecenterHeld = recenterHeld;
     }
 
     public Quaternion Rotation { get; }
     public Vector3 AngularVelocityDegrees { get; }
     public Vector3 LinearAcceleration { get; }
     public bool GuardHeld { get; }
+    public bool RecenterHeld { get; }
     public bool OrientationValid { get; }
     public bool GyroscopeValid { get; }
     public bool AccelerationValid { get; }
@@ -123,7 +140,8 @@ public static class MotionPacketCodec
             sequence,
             recenterSequence,
             browserTimestamp,
-            receivedRealtime);
+            receivedRealtime,
+            (flags & MotionDataFlags.RecenterHeld) != 0);
         return true;
     }
 

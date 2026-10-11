@@ -36,6 +36,11 @@ public static class ChambaraAssets
     [MenuItem("Tools/Chambara/Rebuild character assets")]
     public static void Build()
     {
+        if (File.Exists(Root + "/Roster/Models/ChambaraRoster.json"))
+        {
+            BuildRoster();
+            return;
+        }
         AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
         var data = JsonUtility.FromJson<ExportData>(File.ReadAllText(Models + "/ChambaraExport.json"));
         Directory.CreateDirectory(Root + "/Materials");
@@ -106,6 +111,14 @@ public static class ChambaraAssets
         EditorSceneManager.OpenScene("Assets/Scenes/BattleGround.unity");
         var master = Object.FindFirstObjectByType<MasterController>();
         var serialized = new SerializedObject(master);
+        foreach (string part in new[] { "Body", "Sword" })
+        {
+            SerializedProperty prefabs = serialized.FindProperty(part == "Body" ? "characterBodies" : "characterBlades");
+            prefabs.arraySize = data.characters.Length;
+            for (int index = 0; index < data.characters.Length; index++)
+                prefabs.GetArrayElementAtIndex(index).objectReferenceValue = AssetDatabase.LoadAssetAtPath<GameObject>(
+                    Root + "/Prefabs/Chambara" + data.characters[index].name + part + ".prefab");
+        }
         for (int index = 0; index < 2; index++)
         {
             string suffix = (index + 1).ToString();
@@ -134,6 +147,173 @@ public static class ChambaraAssets
         AssetDatabase.SaveAssets();
         Debug.Log("Chambara assets built. Chest=" + serialized.FindProperty("chestCenter").vector3Value
             + ", guard plane=" + anchor.guardPlaneOffset);
+    }
+
+    // The four bodies share their meshes across six palette variants.
+    public static void BuildRoster()
+    {
+        const string roster = Root + "/Roster";
+        const string stage = "Assets/Art/Stages/Colosseum";
+        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+        var data = JsonUtility.FromJson<ExportData>(File.ReadAllText(roster + "/Models/ChambaraRoster.json"));
+        Directory.CreateDirectory(roster + "/Materials");
+        Directory.CreateDirectory(roster + "/Prefabs");
+        AssetDatabase.Refresh();
+        var materials = new Dictionary<string, Material>();
+        foreach (MaterialData source in data.materials)
+        {
+            if (source.name.StartsWith("Studio") || source.name.StartsWith("Display")) continue;
+            string name = MaterialKey(source.name);
+            string path = roster + "/Materials/" + name + ".mat";
+            var material = AssetDatabase.LoadAssetAtPath<Material>(path);
+            if (material == null)
+            {
+                material = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+                AssetDatabase.CreateAsset(material, path);
+            }
+            material.name = name;
+            material.color = new Color(source.color[0], source.color[1], source.color[2], source.color[3]);
+            material.SetFloat("_Smoothness", 1f - source.roughness);
+            if (name == "Robot_body_metal" || name == "Robot_brushed_metal" || name == "Robot_screws")
+                material.SetFloat("_Metallic", 0.65f);
+            EditorUtility.SetDirty(material);
+            materials[name] = material;
+        }
+        var bodies = new List<GameObject>();
+        var blades = new List<GameObject>();
+        foreach (CharacterData character in data.characters)
+        {
+            GameObject model = ImportRosterModel(roster + "/Models/Chambara" + character.name + "Body.fbx", true, materials);
+            foreach (string color in MasterController.ColorNames)
+                bodies.Add(PalettePrefab(model, roster + "/Prefabs", "Chambara" + character.name + ColorTitle(color) + "Body", color, materials));
+        }
+        GameObject swordModel = ImportRosterModel(roster + "/Models/ChambaraOriginalSword.fbx", false, materials);
+        foreach (string color in MasterController.ColorNames)
+            blades.Add(PalettePrefab(swordModel, roster + "/Prefabs", "Chambara" + ColorTitle(color) + "Sword", color, materials));
+
+        var textureImporter = (TextureImporter)AssetImporter.GetAtPath(stage + "/terrain.png");
+        textureImporter.sRGBTexture = true;
+        textureImporter.filterMode = FilterMode.Point;
+        textureImporter.mipmapEnabled = true;
+        textureImporter.SaveAndReimport();
+        string terrainPath = stage + "/Terrain.mat";
+        var terrain = AssetDatabase.LoadAssetAtPath<Material>(terrainPath);
+        if (terrain == null)
+        {
+            terrain = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+            AssetDatabase.CreateAsset(terrain, terrainPath);
+        }
+        terrain.SetTexture("_BaseMap", AssetDatabase.LoadAssetAtPath<Texture2D>(stage + "/terrain.png"));
+        terrain.color = Color.white;
+        terrain.SetFloat("_Smoothness", 0f);
+        EditorUtility.SetDirty(terrain);
+        string stageModelPath = stage + "/Colosseum.fbx";
+        var stageImporter = (ModelImporter)AssetImporter.GetAtPath(stageModelPath);
+        ConfigureModel(stageImporter, false);
+        stageImporter.SaveAndReimport();
+        foreach (Material embedded in AssetDatabase.LoadAllAssetsAtPath(stageModelPath).OfType<Material>())
+            stageImporter.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), embedded.name), terrain);
+        stageImporter.SaveAndReimport();
+        var stageRoot = new GameObject("Colosseum");
+        PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(stageModelPath), stageRoot.transform);
+        GameObject stagePrefab = PrefabUtility.SaveAsPrefabAsset(stageRoot, stage + "/Colosseum.prefab");
+        Object.DestroyImmediate(stageRoot);
+
+        EditorSceneManager.OpenScene("Assets/Scenes/BattleGround.unity");
+        var master = Object.FindFirstObjectByType<MasterController>();
+        var serialized = new SerializedObject(master);
+        AssignPrefabs(serialized.FindProperty("characterBodies"), bodies);
+        AssignPrefabs(serialized.FindProperty("characterBlades"), blades);
+        SerializedProperty names = serialized.FindProperty("characterNames");
+        SerializedProperty centers = serialized.FindProperty("characterChestCenters");
+        names.arraySize = centers.arraySize = data.characters.Length;
+        for (int index = 0; index < data.characters.Length; index++)
+        {
+            names.GetArrayElementAtIndex(index).stringValue = data.characters[index].name.ToUpperInvariant();
+            float[] center = data.characters[index].chestCenter;
+            centers.GetArrayElementAtIndex(index).vector3Value = new Vector3(center[0], center[1], center[2]);
+        }
+        serialized.FindProperty("chestCenter").vector3Value = centers.GetArrayElementAtIndex(0).vector3Value;
+        serialized.FindProperty("colosseumStage").objectReferenceValue = stagePrefab;
+        serialized.ApplyModifiedPropertiesWithoutUndo();
+        for (int index = 0; index < 2; index++)
+        {
+            var player = (GameObject)serialized.FindProperty("PlayerObject" + (index + 1)).objectReferenceValue;
+            var sword = (GameObject)serialized.FindProperty("Sword" + (index + 1)).objectReferenceValue;
+            foreach (Transform child in player.transform.Cast<Transform>().Where(t => t.name.StartsWith("Chambara")).ToArray())
+                Object.DestroyImmediate(child.gameObject);
+            foreach (Transform child in sword.transform.Cast<Transform>().ToArray())
+                Object.DestroyImmediate(child.gameObject);
+            var body = (GameObject)PrefabUtility.InstantiatePrefab(bodies[index], player.transform);
+            body.transform.localPosition = Vector3.down;
+            PrefabUtility.InstantiatePrefab(blades[index], sword.transform);
+        }
+        PoseSwords(master, Quaternion.Euler(-90f, 0f, 0f), false);
+        EditorSceneManager.MarkSceneDirty(master.gameObject.scene);
+        EditorSceneManager.SaveScene(master.gameObject.scene);
+        AssetDatabase.SaveAssets();
+        Debug.Log("Chambara roster built: " + bodies.Count + " bodies, " + blades.Count + " swords, colosseum.");
+    }
+
+    private static string MaterialKey(string name)
+    {
+        if (name.EndsWith(".001")) name = name.Substring(0, name.Length - 4);
+        return name.Replace(" / ", "_").Replace(" _ ", "_").Replace(" ", "_");
+    }
+
+    private static string ColorTitle(string color) => color.Substring(0, 1) + color.Substring(1).ToLowerInvariant();
+
+    private static void ConfigureModel(ModelImporter importer, bool body)
+    {
+        importer.globalScale = 1f;
+        importer.bakeAxisConversion = true;
+        importer.importAnimation = false;
+        importer.animationType = body ? ModelImporterAnimationType.Generic : ModelImporterAnimationType.None;
+        importer.importCameras = false;
+        importer.importLights = false;
+        importer.materialImportMode = ModelImporterMaterialImportMode.ImportStandard;
+    }
+
+    private static GameObject ImportRosterModel(string path, bool body, Dictionary<string, Material> materials)
+    {
+        var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+        ConfigureModel(importer, body);
+        importer.SaveAndReimport();
+        foreach (Material embedded in AssetDatabase.LoadAllAssetsAtPath(path).OfType<Material>())
+        {
+            if (!materials.TryGetValue(MaterialKey(embedded.name), out Material mapped))
+                throw new InvalidOperationException("Unknown exported material: " + embedded.name);
+            importer.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), embedded.name), mapped);
+        }
+        importer.SaveAndReimport();
+        return AssetDatabase.LoadAssetAtPath<GameObject>(path);
+    }
+
+    private static GameObject PalettePrefab(GameObject model, string folder, string name, string color, Dictionary<string, Material> materials)
+    {
+        var root = new GameObject(name);
+        var instance = (GameObject)PrefabUtility.InstantiatePrefab(model, root.transform);
+        foreach (Renderer renderer in instance.GetComponentsInChildren<Renderer>())
+        {
+            Material[] palette = renderer.sharedMaterials;
+            for (int index = 0; index < palette.Length; index++)
+            {
+                string key = MaterialKey(palette[index].name);
+                foreach (string prefix in new[] { "Armor_seams_", "Armor_", "Padded_sword_" })
+                    if (key.StartsWith(prefix)) { palette[index] = materials[prefix + color]; break; }
+            }
+            renderer.sharedMaterials = palette;
+        }
+        GameObject prefab = PrefabUtility.SaveAsPrefabAsset(root, folder + "/" + name + ".prefab");
+        Object.DestroyImmediate(root);
+        return prefab;
+    }
+
+    private static void AssignPrefabs(SerializedProperty field, List<GameObject> prefabs)
+    {
+        field.arraySize = prefabs.Count;
+        for (int index = 0; index < prefabs.Count; index++)
+            field.GetArrayElementAtIndex(index).objectReferenceValue = prefabs[index];
     }
 
     private static GameObject Instantiate(string color, string part, Transform parent)

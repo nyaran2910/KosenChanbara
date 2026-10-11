@@ -1,0 +1,467 @@
+{
+  "source": "circular_stadium.blend",
+  "sourceSha256": "7b8e40dffd655827704ee4686ddbb609bf46fede96861e214eb74fc161b0886e",
+  "blenderVersion": "5.2.0 LTS",
+  "sourceMeshes": 1414,
+  "meshes": 134,
+  "vertices": 1833264,
+  "materials": [
+    {
+      "name": "Charcoal_service_pavement",
+      "sourceName": "Charcoal service pavement",
+      "color": [
+        0.07000000029802322,
+        0.09000000357627869,
+        0.10000000149011612,
+        1.0
+      ],
+      "roughness": 0.8999999761581421,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Terracotta_running_track",
+      "sourceName": "Terracotta running track",
+      "color": [
+        0.47999998927116394,
+        0.10999999940395355,
+        0.07000000029802322,
+        1.0
+      ],
+      "roughness": 0.949999988079071,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Infield_grass",
+      "sourceName": "Infield grass",
+      "color": [
+        0.07999999821186066,
+        0.23000000417232513,
+        0.10000000149011612,
+        1.0
+      ],
+      "roughness": 1.0,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Grass_Light_stripe",
+      "sourceName": "Grass | Light stripe",
+      "color": [
+        0.06499999761581421,
+        0.2800000011920929,
+        0.10000000149011612,
+        1.0
+      ],
+      "roughness": 0.9599999785423279,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Grass_Dark_stripe",
+      "sourceName": "Grass | Dark stripe",
+      "color": [
+        0.03500000014901161,
+        0.1899999976158142,
+        0.07000000029802322,
+        1.0
+      ],
+      "roughness": 0.9599999785423279,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "White_field_markings",
+      "sourceName": "White field markings",
+      "color": [
+        0.9399999976158142,
+        0.9599999785423279,
+        0.8999999761581421,
+        1.0
+      ],
+      "roughness": 0.7200000286102295,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Warm_gold_trim",
+      "sourceName": "Warm gold trim",
+      "color": [
+        0.8199999928474426,
+        0.49000000953674316,
+        0.11999999731779099,
+        1.0
+      ],
+      "roughness": 0.3499999940395355,
+      "metallic": 0.47999998927116394,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Warm_architectural_concrete",
+      "sourceName": "Warm architectural concrete",
+      "color": [
+        0.5699999928474426,
+        0.6000000238418579,
+        0.6100000143051147,
+        1.0
+      ],
+      "roughness": 0.8500000238418579,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Blue_roof_glazing",
+      "sourceName": "Blue roof glazing",
+      "color": [
+        0.15000000596046448,
+        0.28999999165534973,
+        0.3700000047683716,
+        1.0
+      ],
+      "roughness": 0.25999999046325684,
+      "metallic": 0.3499999940395355,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Brushed_aluminium",
+      "sourceName": "Brushed aluminium",
+      "color": [
+        0.5699999928474426,
+        0.6499999761581421,
+        0.699999988079071,
+        1.0
+      ],
+      "roughness": 0.2800000011920929,
+      "metallic": 0.7200000286102295,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Seat_Cobalt_blue",
+      "sourceName": "Seat | Cobalt blue",
+      "color": [
+        0.02500000037252903,
+        0.1599999964237213,
+        0.47999998927116394,
+        1.0
+      ],
+      "roughness": 0.3799999952316284,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Ivory_precast_concrete",
+      "sourceName": "Ivory precast concrete",
+      "color": [
+        0.8199999928474426,
+        0.8500000238418579,
+        0.8500000238418579,
+        1.0
+      ],
+      "roughness": 0.6000000238418579,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Seat_Midnight_blue",
+      "sourceName": "Seat | Midnight blue",
+      "color": [
+        0.014999999664723873,
+        0.04500000178813934,
+        0.14000000059604645,
+        1.0
+      ],
+      "roughness": 0.41999998688697815,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Seat_Vermilion",
+      "sourceName": "Seat | Vermilion",
+      "color": [
+        0.7200000286102295,
+        0.05999999865889549,
+        0.03500000014901161,
+        1.0
+      ],
+      "roughness": 0.4399999976158142,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Seat_Ivory",
+      "sourceName": "Seat | Ivory",
+      "color": [
+        0.8799999952316284,
+        0.8899999856948853,
+        0.8199999928474426,
+        1.0
+      ],
+      "roughness": 0.41999998688697815,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Dark_steel",
+      "sourceName": "Dark steel",
+      "color": [
+        0.03500000014901161,
+        0.054999999701976776,
+        0.07999999821186066,
+        1.0
+      ],
+      "roughness": 0.3499999940395355,
+      "metallic": 0.6499999761581421,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Tinted_blue_facade_glass",
+      "sourceName": "Tinted blue facade glass",
+      "color": [
+        0.06499999761581421,
+        0.18000000715255737,
+        0.25,
+        1.0
+      ],
+      "roughness": 0.2199999988079071,
+      "metallic": 0.5,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "White_roof_membrane",
+      "sourceName": "White roof membrane",
+      "color": [
+        0.8899999856948853,
+        0.9200000166893005,
+        0.9300000071525574,
+        1.0
+      ],
+      "roughness": 0.41999998688697815,
+      "metallic": 0.07999999821186066,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Floodlight_diffuser",
+      "sourceName": "Floodlight diffuser",
+      "color": [
+        0.800000011920929,
+        0.9300000071525574,
+        1.0,
+        1.0
+      ],
+      "roughness": 0.5,
+      "metallic": 0.0,
+      "emission": [
+        0.800000011920929,
+        0.9300000071525574,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 3.0
+    },
+    {
+      "name": "LED_screen_blue",
+      "sourceName": "LED screen blue",
+      "color": [
+        0.012000000104308128,
+        0.03999999910593033,
+        0.11999999731779099,
+        1.0
+      ],
+      "roughness": 0.5,
+      "metallic": 0.0,
+      "emission": [
+        0.012000000104308128,
+        0.03999999910593033,
+        0.11999999731779099,
+        1.0
+      ],
+      "emissionStrength": 0.44999998807907104
+    },
+    {
+      "name": "Plaza_stone",
+      "sourceName": "Plaza stone",
+      "color": [
+        0.3499999940395355,
+        0.4099999964237213,
+        0.4399999976158142,
+        1.0
+      ],
+      "roughness": 0.8700000047683716,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Surrounding_ground",
+      "sourceName": "Surrounding ground",
+      "color": [
+        0.1899999976158142,
+        0.23999999463558197,
+        0.25,
+        1.0
+      ],
+      "roughness": 0.9800000190734863,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Tree_foliage",
+      "sourceName": "Tree foliage",
+      "color": [
+        0.07000000029802322,
+        0.2199999988079071,
+        0.10000000149011612,
+        1.0
+      ],
+      "roughness": 1.0,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    },
+    {
+      "name": "Tree_bark_and_benches",
+      "sourceName": "Tree bark and benches",
+      "color": [
+        0.23000000417232513,
+        0.11999999731779099,
+        0.07000000029802322,
+        1.0
+      ],
+      "roughness": 0.8999999761581421,
+      "metallic": 0.0,
+      "emission": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emissionStrength": 0.0
+    }
+  ],
+  "excludedObjects": []
+}

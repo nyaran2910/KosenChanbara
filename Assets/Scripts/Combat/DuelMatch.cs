@@ -12,15 +12,17 @@ namespace SchoolFestival.Combat
         public readonly bool GuardHeld;
         public readonly bool Valid;
         public readonly int PoseGeneration;
+        public readonly bool ThrustRequested;
 
         public CombatInput(float forwardAngle, float angularSpeed, bool guardHeld = false,
-            bool valid = true, int poseGeneration = 0)
+            bool valid = true, int poseGeneration = 0, bool thrustRequested = false)
         {
             ForwardAngle = forwardAngle;
             AngularSpeed = angularSpeed;
             GuardHeld = guardHeld;
             Valid = valid;
             PoseGeneration = poseGeneration;
+            ThrustRequested = thrustRequested;
         }
     }
 
@@ -31,13 +33,15 @@ namespace SchoolFestival.Combat
         public readonly int PushedPlayer;
         public readonly float SignedPush;
         public readonly float HitStopSeconds;
+        public readonly AttackKind Kind;
 
-        public CombatResult(CombatOutcome outcome, int attacker, int pushedPlayer, float signedPush)
+        public CombatResult(CombatOutcome outcome, int attacker, int pushedPlayer, float signedPush, AttackKind kind = AttackKind.Cut)
         {
             Outcome = outcome;
             Attacker = attacker;
             PushedPlayer = pushedPlayer;
             SignedPush = signedPush;
+            Kind = kind;
             HitStopSeconds = outcome == CombatOutcome.Hit || outcome == CombatOutcome.GuardBreak
                 ? DuelMatch.HitStopSeconds : DuelMatch.GuardStopSeconds;
         }
@@ -49,94 +53,46 @@ namespace SchoolFestival.Combat
         public const float AttackAngle = 45f;
         public const float MinimumSpeed = 40f;
         public const float RearmAngle = 80f;
-        public const float GuardAngle = 70f;
         public const float HitPush = 3f;
-        public const float GuardPush = 1.5f;
+        public const float GuardPush = 2f;
+        public const float ThrustPush = HitPush;
+        public const float GuardBreakPush = 1.5f;
         public const float HitStopSeconds = 0.06f;
         public const float GuardStopSeconds = 0.04f;
         public const float PushSeconds = 0.12f;
-        public const float StunSeconds = 0.25f;
+        public const float StunSeconds = CombatReaction.RecoverySeconds;
 
-        private sealed class AttackGate
-        {
-            private bool hasBaseline;
-            private bool armed;
-            private int generation;
-            private float previousAngle;
-
-            public void Reset()
-            {
-                hasBaseline = false;
-                armed = false;
-            }
-
-            public bool Update(CombatInput input, bool blocked)
-            {
-                if (!input.Valid || blocked)
-                {
-                    Reset();
-                    return false;
-                }
-
-                if (!hasBaseline || generation != input.PoseGeneration)
-                {
-                    generation = input.PoseGeneration;
-                    hasBaseline = true;
-                    armed = input.ForwardAngle >= RearmAngle;
-                    previousAngle = input.ForwardAngle;
-                    return false;
-                }
-
-                if (input.ForwardAngle >= RearmAngle)
-                    armed = true;
-
-                bool attack = armed && !input.GuardHeld && input.ForwardAngle <= AttackAngle
-                    && input.AngularSpeed >= MinimumSpeed && input.ForwardAngle < previousAngle;
-                previousAngle = input.ForwardAngle;
-                if (attack)
-                    armed = false;
-                return attack;
-            }
-        }
-
-        private readonly AttackGate[] gates = { new AttackGate(), new AttackGate() };
+        private readonly AttackStroke[] gates = { new AttackStroke(), new AttackStroke() };
         private readonly double[] stunnedUntil = new double[2];
+        private readonly double[] recoveringUntil = new double[2];
         private double resolvingUntil;
 
         public MatchWinner Winner { get; private set; }
         public bool IsResolving(double now) => now < resolvingUntil;
         public bool IsStunned(int player, double now) => now < stunnedUntil[player];
+        public bool IsRecovering(int player, double now) => now < recoveringUntil[player];
 
-        public CombatResult Step(CombatInput first, CombatInput second, float acuteSwordAngle, double now)
+        public CombatResult Step(CombatInput first, CombatInput second, CombatPose firstPose, CombatPose secondPose, double now)
         {
             bool blocked = Winner != MatchWinner.None || IsResolving(now);
-            bool firstAttack = gates[0].Update(first, blocked || IsStunned(0, now));
-            bool secondAttack = gates[1].Update(second, blocked || IsStunned(1, now));
+            bool firstAttack = gates[0].Update(first, now, blocked || IsStunned(0, now));
+            bool secondAttack = gates[1].Update(second, now, blocked || IsStunned(1, now));
             if (!firstAttack && !secondAttack)
                 return default;
 
-            CombatResult result;
-            if (firstAttack && secondAttack)
-            {
-                result = new CombatResult(CombatOutcome.Clash, -1, -1, 0f);
-            }
-            else
-            {
-                int attacker = firstAttack ? 0 : 1;
-                int defender = 1 - attacker;
-                CombatInput defenderInput = firstAttack ? second : first;
-                float direction = firstAttack ? 1f : -1f;
-                bool guard = defenderInput.Valid && defenderInput.GuardHeld && !IsStunned(defender, now);
-                result = !guard
-                    ? new CombatResult(CombatOutcome.Hit, attacker, defender, direction * HitPush)
-                    : acuteSwordAngle > GuardAngle
-                        ? new CombatResult(CombatOutcome.GuardSuccess, attacker, attacker, -direction * GuardPush)
-                        : new CombatResult(CombatOutcome.GuardBreak, attacker, defender, direction * GuardPush);
-            }
+            CombatResult result = CombatExchange.Resolve(firstAttack ? gates[0].Kind : AttackKind.None,
+                secondAttack ? gates[1].Kind : AttackKind.None, firstPose, secondPose,
+                first.Valid && first.GuardHeld,
+                second.Valid && second.GuardHeld).Contact;
+            if (result.Outcome == CombatOutcome.None) return default;
 
             resolvingUntil = now + result.HitStopSeconds + PushSeconds;
             if (result.PushedPlayer >= 0)
-                stunnedUntil[result.PushedPlayer] = now + StunSeconds;
+            {
+                stunnedUntil[result.PushedPlayer] = now + CombatReaction.Duration(result);
+                if (CombatReaction.IsHit(result.Outcome))
+                    recoveringUntil[result.PushedPlayer] = stunnedUntil[result.PushedPlayer];
+            }
             // Input during the reaction cannot be saved up as the next swing.
             gates[0].Reset();
             gates[1].Reset();
@@ -164,6 +120,7 @@ namespace SchoolFestival.Combat
             Winner = MatchWinner.None;
             resolvingUntil = 0;
             stunnedUntil[0] = stunnedUntil[1] = 0;
+            recoveringUntil[0] = recoveringUntil[1] = 0;
             gates[0].Reset();
             gates[1].Reset();
         }

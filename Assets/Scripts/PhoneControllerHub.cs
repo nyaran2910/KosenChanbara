@@ -33,6 +33,8 @@ public sealed class PhoneControllerHub : MonoBehaviour
         public readonly string Id;
         public RTCPeerConnection Peer;
         public RTCDataChannel Channel;
+        // Track transport callbacks independently of the native channel object.
+        public bool ChannelOpen;
         public readonly List<RTCIceCandidateInit> PendingCandidates = new List<RTCIceCandidateInit>();
         public bool RemoteDescriptionSet;
         public bool CloseRequested;
@@ -44,6 +46,7 @@ public sealed class PhoneControllerHub : MonoBehaviour
         public uint LatestSequence;
         public bool HasSequence;
         public int RecenterVersion;
+        public int ConnectionGeneration;
         public ushort LatestRecenterSequence;
         public bool HasRecenterSequence;
         public string Status = "Waiting for QR";
@@ -59,13 +62,12 @@ public sealed class PhoneControllerHub : MonoBehaviour
     private sealed class SlotView
     {
         public RawImage QrImage;
-        public Text GuardText;
-        public Text StatusText;
     }
 
     private static PhoneControllerHub instance;
     private readonly SlotState[] slots = { new SlotState("p1"), new SlotState("p2") };
     private readonly SlotView[] views = { new SlotView(), new SlotView() };
+    private readonly GameObject[] slotCards = new GameObject[2];
     private readonly ConcurrentQueue<string> receivedSignals = new ConcurrentQueue<string>();
     private readonly SemaphoreSlim sendLock = new SemaphoreSlim(1, 1);
 
@@ -82,6 +84,15 @@ public sealed class PhoneControllerHub : MonoBehaviour
             overlay.SetActive(visible);
         if (!visible && EventSystem.current != null)
             EventSystem.current.SetSelectedGameObject(null);
+    }
+
+    public void SetSinglePlayerMode(bool singlePlayer)
+    {
+        // Both slots remain available: in single play they share one fighter.
+        if (slotCards[1] != null)
+            slotCards[1].SetActive(true);
+        if (slotCards[0] != null)
+            slotCards[0].GetComponent<RectTransform>().anchoredPosition = new Vector2(-225, 220);
     }
 
     public static PhoneControllerHub EnsureInstance()
@@ -193,6 +204,9 @@ public sealed class PhoneControllerHub : MonoBehaviour
     {
         return GetSlot(controllerSlot).RecenterVersion;
     }
+
+    public int GetConnectionGeneration(ControllerSlot controllerSlot)
+        => GetSlot(controllerSlot).ConnectionGeneration;
 
     public void Recenter(ControllerSlot controllerSlot)
     {
@@ -555,6 +569,7 @@ public sealed class PhoneControllerHub : MonoBehaviour
         };
         RTCDataChannel channel = peer.CreateDataChannel("motion-v1", channelOptions);
         slot.Channel = channel;
+        slot.ChannelOpen = false;
         channel.OnOpen = () =>
         {
             if (slot.Peer != peer || slot.Channel != channel)
@@ -562,6 +577,7 @@ public sealed class PhoneControllerHub : MonoBehaviour
                 return;
             }
 
+            slot.ChannelOpen = true;
             slot.Status = "Connected (direct LAN)";
             slot.ConnectionDeadline = 0;
             slot.DisconnectDeadline = 0;
@@ -573,6 +589,7 @@ public sealed class PhoneControllerHub : MonoBehaviour
                 return;
             }
 
+            slot.ChannelOpen = false;
             slot.Status = "Phone disconnected";
             slot.CloseRequested = true;
         };
@@ -708,14 +725,15 @@ public sealed class PhoneControllerHub : MonoBehaviour
         else if (MotionPacketCodec.IsNewerRecenterSequence(sample.RecenterSequence, slot.LatestRecenterSequence))
         {
             slot.LatestRecenterSequence = sample.RecenterSequence;
-            slot.RecenterVersion++;
-            slot.Status = "Recentered from phone";
+            // GameFlow recenters on a short press, including in menus.
         }
     }
 
     private void ClosePeer(SlotState slot, string status)
     {
+        slot.ConnectionGeneration++;
         slot.Status = status;
+        slot.ChannelOpen = false;
         slot.CloseRequested = false;
         slot.ConnectionDeadline = 0;
         slot.DisconnectDeadline = 0;
@@ -747,7 +765,7 @@ public sealed class PhoneControllerHub : MonoBehaviour
 
     private static bool IsChannelOpen(SlotState slot)
     {
-        return slot.Channel != null && slot.Channel.ReadyState == RTCDataChannelState.Open;
+        return slot.ChannelOpen;
     }
 
     private SlotState GetSlot(ControllerSlot slot)
@@ -775,7 +793,7 @@ public sealed class PhoneControllerHub : MonoBehaviour
         canvasObject.transform.SetParent(transform, false);
         Canvas canvas = canvasObject.GetComponent<Canvas>();
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        canvas.sortingOrder = 1000;
+        canvas.sortingOrder = 1220;
         CanvasScaler scaler = canvasObject.GetComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
         scaler.referenceResolution = new Vector2(1920, 1080);
@@ -795,84 +813,25 @@ public sealed class PhoneControllerHub : MonoBehaviour
     {
         GameObject card = new GameObject($"{slots[index].Id.ToUpperInvariant()} Controller", typeof(RectTransform));
         card.transform.SetParent(parent, false);
+        slotCards[index] = card;
         RectTransform cardRect = card.GetComponent<RectTransform>();
         cardRect.anchorMin = anchor;
         cardRect.anchorMax = anchor;
         cardRect.pivot = pivot;
         cardRect.anchoredPosition = position;
-        cardRect.sizeDelta = new Vector2(370, 490);
-
-        Text title = CreateText(card.transform, slots[index].Id.ToUpperInvariant(), 32, TextAnchor.MiddleCenter);
-        title.rectTransform.anchoredPosition = new Vector2(0, -16);
-        title.rectTransform.sizeDelta = new Vector2(340, 44);
+        cardRect.sizeDelta = new Vector2(370, 330);
 
         GameObject qrObject = new GameObject("QR", typeof(RawImage));
         qrObject.transform.SetParent(card.transform, false);
         RawImage qr = qrObject.GetComponent<RawImage>();
         qr.color = Color.white;
+        qr.raycastTarget = false;
         qr.rectTransform.anchorMin = new Vector2(0.5f, 1);
         qr.rectTransform.anchorMax = new Vector2(0.5f, 1);
         qr.rectTransform.pivot = new Vector2(0.5f, 1);
         qr.rectTransform.anchoredPosition = new Vector2(0, -60);
         qr.rectTransform.sizeDelta = new Vector2(250, 250);
         views[index].QrImage = qr;
-
-        Text guardText = CreateText(card.transform, "GUARD --", 24, TextAnchor.MiddleCenter);
-        guardText.rectTransform.anchoredPosition = new Vector2(0, -325);
-        guardText.rectTransform.sizeDelta = new Vector2(340, 44);
-        views[index].GuardText = guardText;
-
-        Text status = CreateText(card.transform, "Waiting for QR", 18, TextAnchor.MiddleCenter);
-        status.rectTransform.anchoredPosition = new Vector2(0, -370);
-        status.rectTransform.sizeDelta = new Vector2(350, 42);
-        views[index].StatusText = status;
-
-        Button recenter = CreateButton(card.transform, "RECENTER", new Vector2(-88, -445));
-        ControllerSlot capturedSlot = (ControllerSlot)index;
-        recenter.onClick.AddListener(() => Recenter(capturedSlot));
-        Button rotate = CreateButton(card.transform, "NEW QR", new Vector2(88, -445));
-        rotate.onClick.AddListener(() => RotateSlot(capturedSlot));
-    }
-
-    private static Text CreateText(Transform parent, string value, int fontSize, TextAnchor alignment)
-    {
-        GameObject textObject = new GameObject(value, typeof(Text));
-        textObject.transform.SetParent(parent, false);
-        Text text = textObject.GetComponent<Text>();
-        text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-        text.text = value;
-        text.fontSize = fontSize;
-        text.alignment = alignment;
-        text.color = Color.white;
-        text.horizontalOverflow = HorizontalWrapMode.Wrap;
-        text.verticalOverflow = VerticalWrapMode.Truncate;
-        text.rectTransform.anchorMin = new Vector2(0.5f, 1);
-        text.rectTransform.anchorMax = new Vector2(0.5f, 1);
-        text.rectTransform.pivot = new Vector2(0.5f, 1);
-        return text;
-    }
-
-    private static Button CreateButton(Transform parent, string label, Vector2 position)
-    {
-        GameObject buttonObject = new GameObject(label, typeof(Image), typeof(Button));
-        buttonObject.transform.SetParent(parent, false);
-        Image image = buttonObject.GetComponent<Image>();
-        image.color = Color.white;
-        RectTransform rect = image.rectTransform;
-        rect.anchorMin = new Vector2(0.5f, 1);
-        rect.anchorMax = new Vector2(0.5f, 1);
-        rect.pivot = new Vector2(0.5f, 0.5f);
-        rect.anchoredPosition = position;
-        rect.sizeDelta = new Vector2(158, 54);
-
-        Text text = CreateText(buttonObject.transform, label, 18, TextAnchor.MiddleCenter);
-        text.color = Color.black;
-        text.rectTransform.anchorMin = Vector2.zero;
-        text.rectTransform.anchorMax = Vector2.one;
-        text.rectTransform.pivot = new Vector2(0.5f, 0.5f);
-        text.rectTransform.anchoredPosition = Vector2.zero;
-        text.rectTransform.sizeDelta = Vector2.zero;
-        return buttonObject.GetComponent<Button>();
     }
 
     private void UpdateOverlay()
@@ -881,17 +840,9 @@ public sealed class PhoneControllerHub : MonoBehaviour
         {
             SlotState slot = slots[index];
             SlotView view = views[index];
-            if (view.StatusText != null)
-                view.StatusText.text = slot.Status;
             if (view.QrImage != null && view.QrImage.texture != slot.QrTexture)
             {
                 view.QrImage.texture = slot.QrTexture;
-            }
-            if (view.GuardText != null)
-            {
-                bool available = IsChannelOpen(slot) && !IsStale((ControllerSlot)index);
-                bool guardHeld = available && GuardHeld((ControllerSlot)index);
-                view.GuardText.text = !available ? "GUARD --" : guardHeld ? "GUARD ON" : "GUARD OFF";
             }
         }
     }

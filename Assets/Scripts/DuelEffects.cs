@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using SchoolFestival.Combat;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -9,11 +10,16 @@ public sealed class DuelEffects : MonoBehaviour
     private readonly List<Mesh> meshes = new List<Mesh>();
     private Ribbon[] ribbons;
     private Burst[] bursts;
-    private int nextBurst;
+    private StaggerMark[] staggerMarks;
+    private ThrustStroke[] thrustStrokes;
+    private int nextBurst, nextStaggerMark, nextThrust;
+    private double effectTime;
     private static readonly Vector3[] BurstAxes = { Vector3.right, Vector3.up, Vector3.forward };
     private readonly System.Random random = new System.Random(37);
     public int ActiveBurstCount { get { int count = 0; foreach (Burst b in bursts) if (b.Active) count++; return count; } }
     public int TrailSampleCount => ribbons[0].Count + ribbons[1].Count;
+    public int ActiveStaggerCount { get { int count = 0; if (staggerMarks != null) foreach (StaggerMark mark in staggerMarks) if (mark.Active) count++; return count; } }
+    public int ActiveThrustCount { get { int count = 0; if (thrustStrokes != null) foreach (ThrustStroke stroke in thrustStrokes) if (stroke.Active) count++; return count; } }
 
     private sealed class Ribbon
     {
@@ -42,6 +48,34 @@ public sealed class DuelEffects : MonoBehaviour
         public readonly List<int> Indices = new List<int>(120);
     }
 
+    private sealed class StaggerMark
+    {
+        public GameObject Object;
+        public Mesh Mesh;
+        public DuelAvatar Avatar;
+        public double Start;
+        public float Duration;
+        public bool Active;
+        public readonly List<Vector3> Vertices = new List<Vector3>(16);
+        public readonly List<Color> Colors = new List<Color>(16);
+        public readonly List<int> Indices = new List<int>(24);
+    }
+
+    private sealed class ThrustStroke
+    {
+        public const float Duration = .18f;
+        public GameObject Object;
+        public Mesh Mesh;
+        public Transform Sword;
+        public Vector3 Direction;
+        public Color Color;
+        public double Start;
+        public bool Active;
+        public readonly List<Vector3> Vertices = new List<Vector3>(224);
+        public readonly List<Color> Colors = new List<Color>(224);
+        public readonly List<int> Indices = new List<int>(336);
+    }
+
     public void Initialize(Transform firstSword, Transform secondSword)
     {
         material = new Material(Resources.Load<Shader>("CombatEffects"));
@@ -56,7 +90,24 @@ public sealed class DuelEffects : MonoBehaviour
             bursts[i] = new Burst { Mesh = mesh, Object = go };
             go.SetActive(false);
         }
+        staggerMarks = new StaggerMark[16];
+        for (int i = 0; i < staggerMarks.Length; i++)
+        {
+            Mesh mesh = CreateMesh("Stagger surprise " + i, out GameObject go);
+            staggerMarks[i] = new StaggerMark { Mesh = mesh, Object = go };
+            go.SetActive(false);
+        }
+        thrustStrokes = new ThrustStroke[4];
+        for (int i = 0; i < thrustStrokes.Length; i++)
+        {
+            Mesh mesh = CreateMesh("Thrust stroke " + i, out GameObject go);
+            thrustStrokes[i] = new ThrustStroke { Mesh = mesh, Object = go };
+            go.SetActive(false);
+        }
+        RenderPipelineManager.beginCameraRendering += FaceStaggerMarks;
     }
+
+    public void SetSwordColor(int index, Color color) { ribbons[index].Color = color; ClearTrails(); }
 
     private Mesh CreateMesh(string name, out GameObject go)
     {
@@ -88,8 +139,48 @@ public sealed class DuelEffects : MonoBehaviour
         DrawBurst(b, 0f);
     }
 
+    public void ShowStagger(DuelAvatar avatar, double now, float durationSeconds)
+    {
+        if (avatar == null || !avatar.IsStanding) return;
+        StaggerMark mark = null;
+        foreach (StaggerMark existing in staggerMarks)
+            if (existing.Active && existing.Avatar == avatar) { mark = existing; break; }
+        if (mark == null) mark = staggerMarks[nextStaggerMark++ % staggerMarks.Length];
+        mark.Avatar = avatar; mark.Start = now; mark.Duration = Mathf.Max(.1f, durationSeconds);
+        mark.Active = true; mark.Object.SetActive(true); effectTime = now;
+        DrawStaggerMark(mark, now, Vector3.right, Vector3.up, Vector3.forward);
+    }
+
+    public void EmitThrust(Transform sword, Vector3 worldDirection, int playerIndex, double now)
+    {
+        if (sword == null) return;
+        CancelThrust(sword);
+        ThrustStroke stroke = thrustStrokes[nextThrust++ % thrustStrokes.Length];
+        stroke.Sword = sword;
+        stroke.Direction = worldDirection.sqrMagnitude > .0001f ? worldDirection.normalized : sword.forward;
+        stroke.Color = ribbons[Mathf.Clamp(playerIndex, 0, ribbons.Length - 1)].Color;
+        // The cue starts with the fast drive, after the small chamber motion.
+        stroke.Start = now + ThrustPose.ChamberSeconds;
+        stroke.Active = true; stroke.Object.SetActive(true); stroke.Mesh.Clear();
+    }
+
+    public void CancelThrust(Transform sword)
+    {
+        if (thrustStrokes == null) return;
+        foreach (ThrustStroke stroke in thrustStrokes)
+            if (stroke.Active && stroke.Sword == sword)
+            { stroke.Active = false; stroke.Sword = null; stroke.Object.SetActive(false); stroke.Mesh.Clear(); }
+    }
+
+    public void ReplaceAvatar(DuelAvatar previous, DuelAvatar replacement)
+    {
+        foreach (StaggerMark mark in staggerMarks)
+            if (mark.Avatar == previous) mark.Avatar = replacement;
+    }
+
     public void Tick(double now, bool frozen)
     {
+        effectTime = now;
         foreach (Ribbon r in ribbons)
         {
             if (!frozen)
@@ -121,6 +212,117 @@ public sealed class DuelEffects : MonoBehaviour
             if (age >= b.Duration) { b.Active = false; b.Object.SetActive(false); continue; }
             DrawBurst(b, age);
         }
+        foreach (StaggerMark mark in staggerMarks)
+        {
+            if (!mark.Active) continue;
+            if (mark.Avatar == null || !mark.Avatar.IsStanding || now >= mark.Start + mark.Duration)
+            {
+                mark.Active = false; mark.Avatar = null; mark.Object.SetActive(false); continue;
+            }
+            DrawStaggerMark(mark, now, Vector3.right, Vector3.up, Vector3.forward);
+        }
+        foreach (ThrustStroke stroke in thrustStrokes)
+        {
+            if (!stroke.Active) continue;
+            float age = (float)(now - stroke.Start);
+            if (stroke.Sword == null || age >= ThrustStroke.Duration)
+            { stroke.Active = false; stroke.Sword = null; stroke.Object.SetActive(false); stroke.Mesh.Clear(); continue; }
+            if (age >= 0f && !frozen) DrawThrust(stroke, age);
+        }
+    }
+
+    private static void DrawThrust(ThrustStroke stroke, float age)
+    {
+        float t = Mathf.Clamp01(age / ThrustStroke.Duration);
+        // A forward flash and an expanding perpendicular ring make a straight
+        // thrust readable from the side and from either player's own view.
+        float alpha = Mathf.Min(1f, t / .12f) * (1f - t);
+        Vector3 axis = stroke.Direction;
+        Vector3 right = Vector3.Cross(axis, Vector3.up).normalized;
+        if (right.sqrMagnitude < .01f) right = Vector3.right;
+        Vector3 up = Vector3.Cross(right, axis).normalized;
+        Vector3 tip = stroke.Sword.position + axis * CombatContact.BladeLength;
+        float width = .045f * (1f - t);
+        Color color = Color.Lerp(stroke.Color, Color.white, .65f); color.a = alpha;
+        Color white = new Color(1f, 1f, 1f, alpha);
+        stroke.Mesh.Clear(); stroke.Vertices.Clear(); stroke.Colors.Clear(); stroke.Indices.Clear();
+        // Rings at the blade base and middle stay in front of the opponent,
+        // where the own-view camera can see them even when the tip is hidden.
+        for (int ring = 0; ring < 3; ring++)
+        {
+            float along = ring == 0 ? .65f : ring == 1 ? 1.12f : CombatContact.BladeLength - .14f;
+            Vector3 center = stroke.Sword.position + axis * along;
+            float radius = ring == 0 ? .28f + .35f * t : ring == 1 ? .32f + .43f * t : .28f + .42f * t;
+            float ringWidth = (ring == 0 ? .045f : .05f) * (1f - t);
+            const int segments = 16;
+            for (int i = 0; i < segments; i++)
+            {
+                float first = i * Mathf.PI * 2f / segments, next = (i + 1) * Mathf.PI * 2f / segments;
+                Vector3 a = right * Mathf.Cos(first) + up * Mathf.Sin(first);
+                Vector3 b = right * Mathf.Cos(next) + up * Mathf.Sin(next);
+                AddThrustQuad(stroke, center + a * (radius - ringWidth), center + b * (radius - ringWidth),
+                    center + b * (radius + ringWidth), center + a * (radius + ringWidth), color);
+            }
+        }
+        for (int i = 0; i < 3; i++)
+        {
+            float angle = i * Mathf.PI / 3f;
+            Vector3 side = right * Mathf.Cos(angle) + up * Mathf.Sin(angle);
+            float length = 1.3f * (1f - t) + .5f;
+            AddThrustQuad(stroke, tip - axis * length - side * width, tip - axis * length + side * width,
+                tip + axis * .1f + side * width * .25f, tip + axis * .1f - side * width * .25f, white);
+        }
+        stroke.Mesh.SetVertices(stroke.Vertices); stroke.Mesh.SetColors(stroke.Colors);
+        stroke.Mesh.SetTriangles(stroke.Indices, 0); stroke.Mesh.RecalculateBounds();
+    }
+
+    private static void AddThrustQuad(ThrustStroke stroke, Vector3 a, Vector3 b, Vector3 c, Vector3 d, Color color)
+    {
+        int first = stroke.Vertices.Count;
+        stroke.Vertices.Add(a); stroke.Vertices.Add(b); stroke.Vertices.Add(c); stroke.Vertices.Add(d);
+        for (int i = 0; i < 4; i++) stroke.Colors.Add(color);
+        stroke.Indices.Add(first); stroke.Indices.Add(first + 1); stroke.Indices.Add(first + 2);
+        stroke.Indices.Add(first); stroke.Indices.Add(first + 2); stroke.Indices.Add(first + 3);
+    }
+
+    private void FaceStaggerMarks(ScriptableRenderContext context, Camera camera)
+    {
+        if (staggerMarks == null || camera == null) return;
+        foreach (StaggerMark mark in staggerMarks)
+            if (mark.Active && mark.Avatar != null && mark.Avatar.IsStanding)
+                DrawStaggerMark(mark, effectTime, camera.transform.right, camera.transform.up, camera.transform.forward);
+    }
+
+    private static void DrawStaggerMark(StaggerMark mark, double now, Vector3 right, Vector3 up, Vector3 forward)
+    {
+        float age = Mathf.Max(0f, (float)(now - mark.Start));
+        float pop = age < .1f ? Mathf.SmoothStep(.55f, 1.12f, age / .1f)
+            : Mathf.Lerp(1.12f, 1f, Mathf.Clamp01((age - .1f) / .08f));
+        float alpha = Mathf.Clamp01((mark.Duration - age) / .14f);
+        Vector3 center = mark.Avatar.HeadPosition + Vector3.up * (.34f + Mathf.Sin(age * 16f) * .025f);
+        right *= pop; up *= pop;
+        mark.Mesh.Clear(); mark.Vertices.Clear(); mark.Colors.Clear(); mark.Indices.Clear();
+        Color outline = new Color(.15f, .2f, .28f, alpha), yellow = new Color(1f, .86f, .08f, alpha);
+        AddMarkQuad(mark, center, right, up, .095f, .055f, -.055f, .22f, outline);
+        AddMarkQuad(mark, center, right, up, .069f, .069f, -.20f, -.07f, outline);
+        center -= forward * .002f;
+        AddMarkQuad(mark, center, right, up, .067f, .029f, -.033f, .194f, yellow);
+        AddMarkQuad(mark, center, right, up, .044f, .044f, -.175f, -.095f, yellow);
+        mark.Mesh.SetVertices(mark.Vertices); mark.Mesh.SetColors(mark.Colors);
+        mark.Mesh.SetTriangles(mark.Indices, 0); mark.Mesh.RecalculateBounds();
+    }
+
+    private static void AddMarkQuad(StaggerMark mark, Vector3 center, Vector3 right, Vector3 up,
+        float topWidth, float bottomWidth, float bottom, float top, Color color)
+    {
+        int first = mark.Vertices.Count;
+        mark.Vertices.Add(center - right * topWidth + up * top);
+        mark.Vertices.Add(center + right * topWidth + up * top);
+        mark.Vertices.Add(center + right * bottomWidth + up * bottom);
+        mark.Vertices.Add(center - right * bottomWidth + up * bottom);
+        for (int i = 0; i < 4; i++) mark.Colors.Add(color);
+        mark.Indices.Add(first); mark.Indices.Add(first + 1); mark.Indices.Add(first + 2);
+        mark.Indices.Add(first); mark.Indices.Add(first + 2); mark.Indices.Add(first + 3);
     }
 
     private static void DrawRibbon(Ribbon r, double now)
@@ -175,12 +377,19 @@ public sealed class DuelEffects : MonoBehaviour
     public void ClearTrails() { if (ribbons == null) return; foreach (Ribbon r in ribbons) { r.Count = 0; r.Mesh.Clear(); } }
     public void ResetEffects()
     {
-        ClearTrails(); nextBurst = 0;
+        ClearTrails(); nextBurst = nextStaggerMark = nextThrust = 0;
+        if (staggerMarks != null)
+            foreach (StaggerMark mark in staggerMarks)
+            { mark.Active = false; mark.Avatar = null; mark.Object.SetActive(false); mark.Mesh.Clear(); }
+        if (thrustStrokes != null)
+            foreach (ThrustStroke stroke in thrustStrokes)
+            { stroke.Active = false; stroke.Sword = null; stroke.Object.SetActive(false); stroke.Mesh.Clear(); }
         if (bursts == null) return;
         foreach (Burst b in bursts) { b.Active = false; b.Object.SetActive(false); b.Mesh.Clear(); }
     }
     private void OnDestroy()
     {
+        RenderPipelineManager.beginCameraRendering -= FaceStaggerMarks;
         foreach (GameObject go in ownedObjects) if (go != null) Destroy(go);
         foreach (Mesh mesh in meshes) Destroy(mesh);
         if (material != null) Destroy(material);

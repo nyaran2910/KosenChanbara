@@ -1,0 +1,83 @@
+{
+  "source": "chambara_stage.blend",
+  "sourceSha256": "c2c1ebeb1289daf489b0050e0a87e0b637dcecb1f723dac0c3d62acf82ba25ca",
+  "blenderVersion": "5.2.0 LTS",
+  "meshes": 73,
+  "materials": [
+    {
+      "name": "Platform_light_warm_gray",
+      "sourceName": "Platform / light warm gray",
+      "color": [
+        0.7379103899002075,
+        0.7454041838645935,
+        0.715693473815918,
+        1.0
+      ],
+      "roughness": 0.8799999952316284,
+      "metallic": 0.0
+    },
+    {
+      "name": "Rim_pale_red",
+      "sourceName": "Rim / pale red",
+      "color": [
+        0.8148465752601624,
+        0.35640013217926025,
+        0.35640013217926025,
+        1.0
+      ],
+      "roughness": 0.7599999904632568,
+      "metallic": 0.0
+    },
+    {
+      "name": "Logo_neutral_gray",
+      "sourceName": "Logo / neutral gray",
+      "color": [
+        0.2158605009317398,
+        0.2158605009317398,
+        0.2158605009317398,
+        1.0
+      ],
+      "roughness": 0.949999988079071,
+      "metallic": 0.0
+    },
+    {
+      "name": "Steel_dark_gray",
+      "sourceName": "Steel / dark gray",
+      "color": [
+        0.06847816705703735,
+        0.08650045841932297,
+        0.10224173218011856,
+        1.0
+      ],
+      "roughness": 0.550000011920929,
+      "metallic": 0.550000011920929
+    },
+    {
+      "name": "Steel_connection_plates",
+      "sourceName": "Steel / connection plates",
+      "color": [
+        0.14126329123973846,
+        0.17144110798835754,
+        0.19806931912899017,
+        1.0
+      ],
+      "roughness": 0.5699999928474426,
+      "metallic": 0.5
+    },
+    {
+      "name": "Steel_bolts",
+      "sourceName": "Steel / bolts",
+      "color": [
+        0.24228112399578094,
+        0.28314873576164246,
+        0.30946892499923706,
+        1.0
+      ],
+      "roughness": 0.49000000953674316,
+      "metallic": 0.550000011920929
+    }
+  ],
+  "excludedObjects": [
+    "Studio_ground"
+  ]
+}

@@ -7,6 +7,17 @@ public sealed class DuelArena : MonoBehaviour
     private readonly List<Mesh> meshes = new List<Mesh>();
     private GameObject platform;
     private SpriteRenderer source;
+    private GameObject environment;
+    private GameObject background;
+    private Bounds fieldBounds;
+    private bool hasFieldBounds;
+
+    public bool TryGetFieldBoundary(out Vector2 center, out float radius)
+    {
+        center = new Vector2(fieldBounds.center.x, fieldBounds.center.z);
+        radius = Mathf.Min(fieldBounds.extents.x, fieldBounds.extents.z);
+        return hasFieldBounds && radius > 0f;
+    }
 
     public void Initialize(SpriteRenderer arena)
     {
@@ -26,6 +37,44 @@ public sealed class DuelArena : MonoBehaviour
         Destroy(side.GetComponent<Collider>());
         side.GetComponent<Renderer>().sharedMaterial = CreateMaterial(new Color(0.36f, 0.22f, 0.12f));
         arena.enabled = false;
+    }
+    public void SetStage(GameObject prefab, bool ringOutEnabled = true, bool baseballField = false, bool replacePlatform = false,
+        GameObject backgroundPrefab = null)
+    {
+        if (environment != null) { environment.SetActive(false); Destroy(environment); }
+        if (background != null) { background.SetActive(false); Destroy(background); }
+        background = null;
+        hasFieldBounds = false;
+        platform.SetActive(ringOutEnabled && (!replacePlatform || prefab == null));
+        environment = prefab == null ? null : Instantiate(prefab);
+        if (environment != null)
+        {
+            environment.name = "Duel stage";
+            // The imported platform and field place their playable floor at y = 0.
+            environment.transform.position = platform.transform.position
+                + (ringOutEnabled && !replacePlatform ? Vector3.down * 0.35f : Vector3.zero);
+            if(baseballField)environment.AddComponent<BaseballField>().Initialize(environment);
+            if (!ringOutEnabled)
+                foreach (Renderer renderer in environment.GetComponentsInChildren<Renderer>())
+                    if (renderer.name == "Infield_concrete_foundation")
+                    {
+                        fieldBounds = renderer.bounds;
+                        hasFieldBounds = true;
+                        break;
+                    }
+        }
+        if (ringOutEnabled && backgroundPrefab != null)
+        {
+            background = Instantiate(backgroundPrefab);
+            background.name = "Stadium background";
+            float floor = platform.transform.position.y - .35f;
+            if (environment != null)
+                foreach (Renderer renderer in environment.GetComponentsInChildren<Renderer>())
+                    floor = Mathf.Min(floor, renderer.bounds.min.y);
+            // Stand the platform's supplied support posts on the stadium grass.
+            // The fighting floor and ring-out coordinates remain at y = 0.
+            background.transform.position = new Vector3(platform.transform.position.x, floor, platform.transform.position.z);
+        }
     }
     private Material CreateMaterial(Color color)
     {
@@ -54,6 +103,8 @@ public sealed class DuelArena : MonoBehaviour
     {
         if (source != null) source.enabled = true;
         if (platform != null) Destroy(platform);
+        if (environment != null) Destroy(environment);
+        if (background != null) Destroy(background);
         foreach (Mesh mesh in meshes) Destroy(mesh);
         foreach (Material material in materials) Destroy(material);
     }
