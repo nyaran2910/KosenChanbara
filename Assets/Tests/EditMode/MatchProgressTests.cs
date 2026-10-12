@@ -170,10 +170,11 @@ public sealed class MatchProgressTests
         var run = new ShowdownProgress(); run.Reset();
         Assert.That(run.Damage(0), Is.True);
         Assert.That(run.IsRecovering(.1d), Is.True);
-        Assert.That(run.Damage(.1d), Is.True, "Stagger is an attack restriction, not immunity from a fresh contact.");
+        Assert.That(run.Damage(.1d), Is.False, "The common damage immunity lasts 0.2 seconds.");
         Assert.That(run.Damage(.2d), Is.True);
-        Assert.That(run.Damage(.3d), Is.True);
         Assert.That(run.Damage(.4d), Is.True);
+        Assert.That(run.Damage(.6d), Is.True);
+        Assert.That(run.Damage(.8d), Is.True);
         Assert.That(run.Hearts, Is.Zero);
         Assert.That(run.Finished, Is.True);
         Assert.That(run.Cleared, Is.False);
@@ -189,13 +190,13 @@ public sealed class MatchProgressTests
     {
         var run=new ShowdownProgress();run.Reset();
         Assert.That(run.Hearts,Is.EqualTo(10));
-        for(int hit=0;hit<9;hit++)Assert.That(run.Damage(hit*.1,true),Is.True);
+        for(int hit=0;hit<9;hit++)Assert.That(run.Damage(hit*.2,true),Is.True);
         Assert.That(run.Hearts,Is.EqualTo(1));
-        Assert.That(run.Damage(1,false),Is.True);
+        Assert.That(run.Damage(1.8,false),Is.True);
         Assert.That(run.Hearts,Is.Zero);
         Assert.That(run.Damage(2,true),Is.False);
         run.Reset();Assert.That(run.Hearts,Is.EqualTo(10));
-        for(int hit=0;hit<10;hit++)Assert.That(run.Damage(hit*.1,true),Is.True);
+        for(int hit=0;hit<10;hit++)Assert.That(run.Damage(hit*.2,true),Is.True);
         Assert.That(run.Hearts,Is.Zero);
     }
 

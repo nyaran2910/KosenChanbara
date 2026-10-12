@@ -65,14 +65,16 @@ namespace SchoolFestival.Combat
         public const float StunSeconds = CombatReaction.RecoverySeconds;
 
         private readonly AttackStroke[] gates = { new AttackStroke(), new AttackStroke() };
+        private readonly CombatDamageWindow[] damageWindows = { new CombatDamageWindow(), new CombatDamageWindow() };
         private readonly double[] stunnedUntil = new double[2];
         private readonly double[] recoveringUntil = new double[2];
         private double resolvingUntil;
 
         public MatchWinner Winner { get; private set; }
-        public bool IsResolving(double now) => now < resolvingUntil;
+        public bool IsResolving(double now) => now + 1e-9 < resolvingUntil;
         public bool IsStunned(int player, double now) => now < stunnedUntil[player];
         public bool IsRecovering(int player, double now) => now < recoveringUntil[player];
+        public bool IsInvulnerable(int player, double now) => damageWindows[player].IsInvulnerable(now);
 
         public CombatResult Step(CombatInput first, CombatInput second, CombatPose firstPose, CombatPose secondPose, double now)
         {
@@ -85,13 +87,15 @@ namespace SchoolFestival.Combat
             CombatResult result = CombatExchange.Resolve(firstAttack ? gates[0].Kind : AttackKind.None,
                 secondAttack ? gates[1].Kind : AttackKind.None, firstPose, secondPose,
                 first.Valid && first.GuardHeld,
-                second.Valid && second.GuardHeld).Contact;
+                second.Valid && second.GuardHeld,
+                firstInvulnerable: IsInvulnerable(0, now), secondInvulnerable: IsInvulnerable(1, now)).Contact;
             if (result.Outcome == CombatOutcome.None) return default;
 
-            resolvingUntil = now + result.HitStopSeconds + PushSeconds;
+            resolvingUntil = now + CombatDamageWindow.Seconds;
             if (result.PushedPlayer >= 0)
             {
                 stunnedUntil[result.PushedPlayer] = now + CombatReaction.Duration(result);
+                damageWindows[result.PushedPlayer].Protect(now);
                 if (CombatReaction.IsHit(result.Outcome))
                     recoveringUntil[result.PushedPlayer] = stunnedUntil[result.PushedPlayer];
             }
@@ -125,6 +129,7 @@ namespace SchoolFestival.Combat
             resolvingUntil = 0;
             stunnedUntil[0] = stunnedUntil[1] = 0;
             recoveringUntil[0] = recoveringUntil[1] = 0;
+            damageWindows[0].Reset(); damageWindows[1].Reset();
             gates[0].Reset();
             gates[1].Reset();
         }

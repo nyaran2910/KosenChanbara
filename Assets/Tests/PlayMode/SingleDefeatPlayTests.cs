@@ -44,7 +44,8 @@ public sealed class SingleDefeatPlayTests
     {
         var progress = Field<ShowdownProgress>(master, "showdown");
         double now = Field<double>(master, "matchTime");
-        while (progress.Hearts > 2) Assert.That(progress.Damage(now), Is.True);
+        double weakenAt = now - 1d;
+        while (progress.Hearts > 2) { Assert.That(progress.Damage(weakenAt), Is.True); weakenAt += .21d; }
         Call(master, "SpawnSingleNpc");
         object npc = Field<IList>(master, "singleNpcs")[0], first = Field<object>(master, "first");
         Transform player = Field<Transform>(first, "Player"), root = Field<GameObject>(npc, "Root").transform;

@@ -15,7 +15,8 @@ namespace SchoolFestival.Combat
     {
         public static CombatExchangeResult Resolve(AttackKind firstKind, AttackKind secondKind,
             CombatPose first, CombatPose second, bool firstGuard, bool secondGuard,
-            bool firstRecovering = false, bool secondRecovering = false)
+            bool firstRecovering = false, bool secondRecovering = false,
+            bool firstInvulnerable = false, bool secondInvulnerable = false)
         {
             // Recovery prevents this fighter's offence, not the opponent's turn
             // or a fresh defensive guard.
@@ -23,6 +24,8 @@ namespace SchoolFestival.Combat
             if (secondRecovering) secondKind = AttackKind.None;
             CombatContactResult a = CombatContact.Resolve(firstKind, first, second, secondGuard);
             CombatContactResult b = CombatContact.Resolve(secondKind, second, first, firstGuard);
+            if (secondInvulnerable && CombatReaction.IsHit(a.Outcome)) a = default;
+            if (firstInvulnerable && CombatReaction.IsHit(b.Outcome)) b = default;
             if (firstKind != AttackKind.None && secondKind != AttackKind.None
                 && CombatContact.TryBladesClash(first, second, out float clash, firstKind, secondKind)
                 && (a.Outcome == CombatOutcome.None || clash <= a.Fraction)
@@ -45,6 +48,20 @@ namespace SchoolFestival.Combat
                         : kind == AttackKind.Thrust ? DuelMatch.ThrustPush : DuelMatch.HitPush), kind, selected.Fraction);
             return new CombatExchangeResult(result, selected.Fraction);
         }
+    }
+
+    public sealed class CombatDamageWindow
+    {
+        public const double Seconds = .2;
+        private double until = double.NegativeInfinity;
+        public bool IsInvulnerable(double now) => now + 1e-9 < until;
+        public void Protect(double now) => until = System.Math.Max(until, now + Seconds);
+        public bool TryHit(double now)
+        {
+            if (IsInvulnerable(now)) return false;
+            Protect(now); return true;
+        }
+        public void Reset() => until = double.NegativeInfinity;
     }
 
     public static class CombatReaction

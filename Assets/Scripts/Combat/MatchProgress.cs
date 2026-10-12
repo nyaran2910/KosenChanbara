@@ -68,7 +68,10 @@ namespace SchoolFestival.Combat
         public bool Cleared => Defeated == Target;
         public bool Finished => Cleared || Hearts == 0;
         private double stunnedUntil;
+        private readonly CombatDamageWindow damageWindow = new CombatDamageWindow();
         public bool IsRecovering(double now) => now < stunnedUntil;
+        public bool IsInvulnerable(double now) => damageWindow.IsInvulnerable(now);
+        public void Protect(double now) => damageWindow.Protect(now);
         public bool TrySpawn()
         {
             if (Finished || Spawned >= Target) return false;
@@ -81,13 +84,22 @@ namespace SchoolFestival.Combat
         }
         public bool Damage(double now, bool guardHeld = false)
         {
-            if (Finished) return false;
+            if (Finished || !damageWindow.TryHit(now)) return false;
             Hearts = Math.Max(0, Hearts - (guardHeld ? 1 : 2));
             stunnedUntil = now + DuelMatch.HitStopSeconds + CombatReaction.RecoverySeconds; return true;
         }
         public void Reset()
         {
             Spawned = Defeated = 0; Hearts = MaxHearts; stunnedUntil = double.NegativeInfinity;
+            damageWindow.Reset();
+        }
+
+        public void StartAtSection(int zeroBasedSection)
+        {
+            if (zeroBasedSection < 0 || zeroBasedSection >= ShowdownCourse.SectionCount)
+                throw new ArgumentOutOfRangeException(nameof(zeroBasedSection));
+            Reset();
+            Spawned = Defeated = zeroBasedSection * ShowdownCourse.ChallengersPerSection;
         }
     }
 }

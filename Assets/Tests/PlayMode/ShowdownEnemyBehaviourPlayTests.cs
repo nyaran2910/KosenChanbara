@@ -138,7 +138,7 @@ public sealed class ShowdownEnemyBehaviourPlayTests
             Call(master,"SetGameplaySuspended",true);Call(master,"SetSingleDifficulty",easy);Call(master,"ResetMatch");
             Field<ShowdownCourse>(master,"singleCourse").GetType().GetProperty("SectionNumber",Fields).SetValue(Field<ShowdownCourse>(master,"singleCourse"),section);
             Call(master,"SetGameplaySuspended",false);
-            object npc=Spawn(Player.forward*1.8f);Set(master,"singleActiveNpc",npc);Set(npc,"NextAttack",Now);
+            object npc=Spawn(Player.forward*3f);Set(master,"singleActiveNpc",npc);Set(npc,"NextAttack",Now);
             if(!easy)Set(master,"singleStunnedUntil",Now+.5d);
             double start=Now;MoveAt(start,0f);
             var timing=new ShowdownDifficulty(section,easy);
@@ -169,7 +169,7 @@ public sealed class ShowdownEnemyBehaviourPlayTests
             Call(master, "SetSingleDifficulty", easy);
             Call(master, "ResetMatch");
             Call(master, "SetGameplaySuspended", false);
-            object npc = Spawn(Player.forward * 1.8f);
+            object npc = Spawn(Player.forward * 3f);
             Set(master, "singleActiveNpc", npc);
             object player = Field<object>(master, "first");
             CombatPose defence = (CombatPose)Call(master, "PlayerDefencePose", player);
@@ -286,7 +286,7 @@ public sealed class ShowdownEnemyBehaviourPlayTests
     [UnityTest]
     public IEnumerator WaitingEnemyLooksAtPlayerAndWandersWithoutChangingGuardOrApproaching()
     {
-        object active = Spawn(Player.forward * 1.8f);
+        object active = Spawn(Player.forward * 3f);
         Spawn(-Player.right * 7f); // The next opponent may approach; this one still wanders.
         object waiting = Spawn(Player.right * 7f);
         Set(master, "singleActiveNpc", active);
@@ -329,7 +329,7 @@ public sealed class ShowdownEnemyBehaviourPlayTests
         Set(npc, "OpeningAttack", false);
         Set(npc, "NextAttack", double.PositiveInfinity);
         Transform root = Field<GameObject>(npc, "Root").transform;
-        root.position = Player.position + Player.forward * 2.2f;
+        root.position = Player.position + Player.forward * 3f;
         MoveAt(Now, 0f);
         double next = Field<double>(npc, "NextAttack");
         Assert.That(next, Is.EqualTo(Now + SingleTiming().AttackWait).Within(.0001d));
@@ -344,7 +344,7 @@ public sealed class ShowdownEnemyBehaviourPlayTests
     [UnityTest]
     public IEnumerator NextOpponentApproachesToWaitingRangeWithoutTakingGuardOrAttackRole()
     {
-        object active = Spawn(Player.forward * 1.8f);
+        object active = Spawn(Player.forward * 3f);
         object next = Spawn(Player.right * 7f);
         object waiting = Spawn(-Player.forward * 7f);
         Set(master, "singleActiveNpc", active);
@@ -399,7 +399,7 @@ public sealed class ShowdownEnemyBehaviourPlayTests
     [UnityTest]
     public IEnumerator ActivationCueOccursOncePerRoleAndMovesToTheNextLivingEnemy()
     {
-        object active = Spawn(Player.forward * 1.8f);
+        object active = Spawn(Player.forward * 3f);
         object waiting = Spawn(Player.right * 7f);
         double selectedAt = Now;
         MoveAt(selectedAt, 0f);
@@ -437,7 +437,7 @@ public sealed class ShowdownEnemyBehaviourPlayTests
             Call(master, "SetSingleDifficulty", easy);
             Call(master, "ResetMatch");
             Call(master, "SetGameplaySuspended", false);
-            object npc = Spawn(Player.forward * 1.8f, 3);
+            object npc = Spawn(Player.forward * 3f, 3);
             Set(master, "singleActiveNpc", npc);
             double guardedAt = Now;
             Contact(npc, true);
@@ -490,7 +490,7 @@ public sealed class ShowdownEnemyBehaviourPlayTests
             Call(master, "SetSingleDifficulty", true);
             Call(master, "ResetMatch");
             Call(master, "SetGameplaySuspended", false);
-            object npc = Spawn(Player.forward * 1.8f);
+            object npc = Spawn(Player.forward * 3f);
             Set(master, "singleActiveNpc", npc);
             Set(npc, "NextAttack", 0d);
             MoveAt(Now, 0f);
@@ -587,7 +587,7 @@ public sealed class ShowdownEnemyBehaviourPlayTests
     [UnityTest]
     public IEnumerator SurvivingEnemySwordDefendsImmediatelyAndThroughoutStaggerWithoutAttacking()
     {
-        object npc = Spawn(Player.forward * 1.8f, 3);
+        object npc = Spawn(Player.forward * 3f, 3);
         Set(master, "singleActiveNpc", npc);
         Transform sword = Field<Transform>(npc, "Sword");
         Vector3 capturedGrip = sword.localPosition;
@@ -640,7 +640,7 @@ public sealed class ShowdownEnemyBehaviourPlayTests
         object npc = Field<IList>(master, "singleNpcs")[0];
         Assert.That(Field<int>(npc, "GuardOctant"), Is.EqualTo(-1), "Normal generation never chooses a legacy fixed octant.");
         Transform root = Field<GameObject>(npc, "Root").transform;
-        root.position = Player.position + Player.forward * 1.8f;
+        root.position = Player.position + Player.forward * 3f;
         root.rotation = Quaternion.LookRotation(-Player.forward);
         Set(master, "singleActiveNpc", npc);
         Set(npc, "NextAttack", Now + 100d);
@@ -686,7 +686,7 @@ public sealed class ShowdownEnemyBehaviourPlayTests
             Call(master, "SpawnSingleNpc");
             object npc = Field<IList>(master, "singleNpcs")[0];
             Transform root = Field<GameObject>(npc, "Root").transform;
-            root.position = Player.position + Player.forward * 1.8f;
+            root.position = Player.position + Player.forward * 3f;
             root.rotation = Quaternion.LookRotation(-Player.forward);
             Set(master, "singleActiveNpc", npc);
             int intermediate = 0;
@@ -746,7 +746,7 @@ public sealed class ShowdownEnemyBehaviourPlayTests
             (outcome:CombatOutcome.GuardSuccess,guard:true,damage:0)})
         {
             Call(master,"SetSingleDifficulty",easy);Call(master,"ResetMatch");
-            object npc=Spawn(Player.forward*1.8f);
+            object npc=Spawn(Player.forward*3f);
             object player=Field<object>(master,"first");
             CombatPose defence=(CombatPose)Call(master,"PlayerDefencePose",player);
             CombatPose attack=(CombatPose)Call(master,"NpcCombatPose",npc);

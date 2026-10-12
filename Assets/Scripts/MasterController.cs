@@ -77,6 +77,7 @@ public sealed partial class MasterController : MonoBehaviour
         public float WindupSeconds, SwingSeconds, TurnVelocity;
         public Vector3 AttackStart, AttackEnd, AttackEndGrip, AttackAim, AttackReadyDirection, PreviousGrip, PreviousBlade;
         public readonly AttackStroke Stroke = new AttackStroke();
+        public readonly CombatDamageWindow DamageWindow = new CombatDamageWindow();
         public Vector3 CutVelocity;
         public Quaternion WindupRotation, AttackStartRotation;
         public Vector3 WindupGrip, AttackTarget, ChestCenter, GuardPoseDirection = Vector3.up;
@@ -253,6 +254,11 @@ public sealed partial class MasterController : MonoBehaviour
         {
             ReadInput(first, true, false); ReadInput(second, false, false);
             return;
+        }
+        if (IsSingleMode && gameFlow != null && gameFlow.IsPlaying && Keyboard.current != null)
+        {
+            int shortcut = SingleRoundShortcut(Keyboard.current);
+            if (shortcut >= 0) { JumpToSingleRound(shortcut); return; }
         }
         matchTime += Time.unscaledDeltaTime;
         double now = matchTime;
@@ -667,7 +673,7 @@ public sealed partial class MasterController : MonoBehaviour
         Vector3 initialSeparation = transform.TransformVector(second.InitialPosition - first.InitialPosition);
         initialSeparation.y = 0f;
         // Imported/scaled characters must still remain inside shared blade reach.
-        float fightingDistance = Mathf.Min(initialSeparation.magnitude, 3f);
+        float fightingDistance = FightingDistance;
         float excess = separation.magnitude - fightingDistance;
         if (excess <= .001f) return;
 
@@ -723,6 +729,32 @@ public sealed partial class MasterController : MonoBehaviour
         presentation.SetFocusTarget(0, IsSingleMode ? singleFocusAnchor : null);
         presentation.SetMatchMode(IsSingleMode);
         presentation.SetFreePresentation(IsFreeMode);
+    }
+
+    private static readonly Key[] SingleRoundKeys = { Key.Digit0, Key.Digit1, Key.Digit2, Key.Digit3, Key.Digit4,
+        Key.Digit5, Key.Digit6, Key.Digit7, Key.Digit8, Key.Digit9 };
+    private static readonly Key[] SingleRoundKeypad = { Key.Numpad0, Key.Numpad1, Key.Numpad2, Key.Numpad3, Key.Numpad4,
+        Key.Numpad5, Key.Numpad6, Key.Numpad7, Key.Numpad8, Key.Numpad9 };
+    private static int SingleRoundShortcut(Keyboard keyboard)
+    {
+        for (int i = 0; i < SingleRoundKeys.Length; i++)
+            if (keyboard[SingleRoundKeys[i]].wasPressedThisFrame || keyboard[SingleRoundKeypad[i]].wasPressedThisFrame) return i;
+        return -1;
+    }
+
+    private void JumpToSingleRound(int zeroBasedSection)
+    {
+        if (!IsSingleMode || IsPaused || gameFlow == null || !gameFlow.IsPlaying) return;
+        if (zeroBasedSection < 0 || zeroBasedSection >= ShowdownCourse.SectionCount) return;
+        foreach (SingleNpc npc in singleNpcs) if (npc.Root != null) npc.Root.SetActive(false);
+        ResetMatch();
+        first.Player.position = singleCourse.JumpToSection(zeroBasedSection);
+        singleStarted = matchTime;
+        presentation.ResetEffects();
+        ResetSword(first, true);
+        SpawnSingleRound();
+        presentation.ResetShowdownView();
+        presentation.UpdateShowdown(showdown, matchTime, singleStarted, SingleSection, false, 0f);
     }
 
     private void ResetRound()
@@ -1143,8 +1175,8 @@ public sealed partial class MasterController : MonoBehaviour
             if (npc.AttackTimer < 0f)
             {
                 if (npc == singleActiveNpc) AdvanceSingleNpc(npc, dt, difficulty.ApproachSpeed,
-                    npc.Engaged && focusReady ? 1.8f : ShowdownCombat.NextOpponentRange);
-                else if (npc == approaching) AdvanceSingleNpc(npc, dt, difficulty.ApproachSpeed, ShowdownCombat.NextOpponentRange);
+                    npc.Engaged && focusReady ? FightingDistance : SingleQueueDistance);
+                else if (npc == approaching) AdvanceSingleNpc(npc, dt, difficulty.ApproachSpeed, SingleQueueDistance);
                 else WanderSingleNpc(npc, dt);
                 towardPlayer = first.Player.position - root.position; towardPlayer.y = 0f;
                 root.rotation = ShowdownCombat.Turn(root.rotation, towardPlayer, ref npc.TurnVelocity, dt);
@@ -1152,11 +1184,12 @@ public sealed partial class MasterController : MonoBehaviour
                 foreach (SingleNpc other in singleNpcs)
                     if (other != npc && !other.Defeated) singleObstaclePositions.Add(other.Root.transform.position);
                 Vector3 target = first.Player.position - root.position; target.y = 0f;
-                bool inRange = npc == singleActiveNpc && npc.Engaged && focusReady && target.magnitude >= 1.5f
+                bool inRange = npc == singleActiveNpc && npc.Engaged && focusReady && target.magnitude >= FightingDistance - .1f
                     && Vector3.Angle(root.forward, target) < 12f
                     && ShowdownCombat.CanAttack(root.position, first.Player.position, singleObstaclePositions,
-                        npc.ApproachAttack ? ShowdownCombat.ApproachAttackRange(difficulty)
-                        : npc.OpeningAttack ? ShowdownCombat.OpeningAttackRange : ShowdownCombat.AttackRange);
+                        npc.ApproachAttack ? FightingDistance + .1f + difficulty.ApproachSpeed * difficulty.WindupSeconds
+                        : npc.OpeningAttack ? Mathf.Min(ShowdownCombat.OpeningAttackRange,
+                            FightingDistance + difficulty.ApproachSpeed * difficulty.WindupSeconds) : FightingDistance + .1f);
                 if (inRange && double.IsPositiveInfinity(npc.NextAttack)) npc.NextAttack = matchTime + SingleAttackWait(npc);
                 if (inRange && matchTime >= npc.AttackNotBefore && !EasySinglePlayerStaggered
                     && (matchTime >= npc.NextAttack || matchTime < singleStunnedUntil))
@@ -1175,7 +1208,8 @@ public sealed partial class MasterController : MonoBehaviour
                     Vector3 defenceCenter = first.Player.TransformPoint(PlayerChestCenter(first)
                         + Vector3.up * guardHeight + Vector3.forward * guardPlaneOffset);
                     npc.AttackTarget = defenceCenter;
-                    npc.AttackReadyAngle = Random.Range(-90f, 90f);
+                    Vector3 visibleReady = root.InverseTransformDirection(npc.Sword.forward);
+                    npc.AttackReadyAngle = Mathf.Atan2(visibleReady.x, Mathf.Abs(visibleReady.y)) * Mathf.Rad2Deg;
                     npc.AttackReadyPhase = Random.Range(0f, Mathf.PI * 2f);
                     npc.AttackReadyDirection = ShowdownCombat.WindupReadyDirection(npc.AttackReadyAngle, npc.AttackReadyPhase, 0f);
                     npc.LastGeneratedReadyDirection = npc.AttackReadyDirection;
@@ -1191,6 +1225,9 @@ public sealed partial class MasterController : MonoBehaviour
                     npc.WindupRotation = npc.Sword.rotation;
                     npc.WindupGrip = npc.Sword.localPosition;
                     npc.AttackStartRotation = root.rotation * start.Rotation;
+                    // The blade announces the committed lane immediately;
+                    // the hand retains its slower preparation movement.
+                    npc.Sword.localRotation = start.Rotation;
                     npc.PreviousGrip = npc.Sword.position;
                     npc.PreviousBlade = npc.Sword.forward;
                     npc.CutVelocity = Vector3.zero;
@@ -1249,9 +1286,8 @@ public sealed partial class MasterController : MonoBehaviour
                     npc.AttackEndGrip = root.TransformPoint(end.Position);
                     npc.AttackStartRotation = root.rotation * start.Rotation;
                     float preparation = Mathf.Clamp01((npc.WindupSeconds + npc.SwingSeconds - npc.AttackTimer) / npc.WindupSeconds);
-                    SwordPose preparing = ShowdownCombat.BlendFrontPose(
-                        new SwordPose(npc.WindupGrip, Quaternion.Inverse(root.rotation) * npc.WindupRotation), start,
-                        Mathf.SmoothStep(0f, 1f, preparation));
+                    SwordPose preparing = new SwordPose(Vector3.Lerp(npc.WindupGrip, start.Position,
+                        Mathf.SmoothStep(0f, 1f, preparation)), start.Rotation);
                     npc.Sword.SetLocalPositionAndRotation(preparing.Position, preparing.Rotation);
                 }
                 else
@@ -1308,13 +1344,25 @@ public sealed partial class MasterController : MonoBehaviour
         npc.PreviousBlade = npc.Root.transform.TransformDirection(npc.VisualBasePose.Direction);
     }
 
-    private void AdvanceSingleNpc(SingleNpc npc, float dt, float speed, float stoppingDistance = 1.8f)
+    private float FightingDistance
     {
+        get
+        {
+            Vector3 separation = transform.TransformVector(second.InitialPosition - first.InitialPosition);
+            separation.y = 0f;
+            return Mathf.Clamp(separation.magnitude, 1.5f, 3f);
+        }
+    }
+    private float SingleQueueDistance => FightingDistance + ShowdownCombat.MinimumSpacing + .2f;
+
+    private void AdvanceSingleNpc(SingleNpc npc, float dt, float speed, float stoppingDistance = -1f)
+    {
+        if (stoppingDistance < 0f) stoppingDistance = FightingDistance;
         Transform root = npc.Root.transform;
         Vector3 towardPlayer = first.Player.position - root.position; towardPlayer.y = 0f;
         float distance = towardPlayer.magnitude;
         if (matchTime < npc.StunnedUntil) return;
-        bool retreat = distance < stoppingDistance && (npc != singleActiveNpc || distance < 1.5f);
+        bool retreat = distance < stoppingDistance - .001f;
         if (!retreat && distance <= stoppingDistance) return;
         Vector3 heading = distance > .001f ? towardPlayer / distance : root.forward;
         Vector3 proposed = root.position + heading * (retreat ? -1f : 1f)
@@ -1328,8 +1376,8 @@ public sealed partial class MasterController : MonoBehaviour
             proposed += away * (ShowdownCombat.MinimumSpacing - gap.magnitude);
         }
         Vector3 playerGap = proposed - first.Player.position; playerGap.y = 0f;
-        if (playerGap.magnitude < 1.5f)
-            proposed = first.Player.position + playerGap.normalized * 1.5f;
+        if (playerGap.magnitude < stoppingDistance)
+            proposed = first.Player.position + playerGap.normalized * stoppingDistance;
         proposed = singleCourse.ConstrainOpponent(Vector3.MoveTowards(root.position, proposed, speed * dt));
         singleObstaclePositions.Clear();
         foreach (SingleNpc other in singleNpcs)
@@ -1493,7 +1541,7 @@ public sealed partial class MasterController : MonoBehaviour
             player.Player.forward, player.Player.TransformDirection(player.CutVelocity), grip, blade);
     }
 
-    private bool SinglePlayerBlocked => matchTime < singleResolvingUntil
+    private bool SinglePlayerBlocked => matchTime + 1e-9 < singleResolvingUntil
         || matchTime < singleStunnedUntil || showdown.IsRecovering(matchTime);
 
     private void UpdateSingleAttack(CombatInput input)
@@ -1511,7 +1559,8 @@ public sealed partial class MasterController : MonoBehaviour
             bool swinging = npc.Stroke.Active && !npc.ContactResolved;
             CombatExchangeResult result = CombatExchange.Resolve(singleStroke.Kind,
                 swinging ? AttackKind.Cut : AttackKind.None, player, enemy,
-                input.Valid && input.GuardHeld, SingleNpcGuarding(npc, matchTime));
+                input.Valid && input.GuardHeld, SingleNpcGuarding(npc, matchTime),
+                firstInvulnerable: showdown.IsInvulnerable(matchTime), secondInvulnerable: npc.DamageWindow.IsInvulnerable(matchTime));
             if (result.Contact.Outcome == CombatOutcome.None) continue;
             float distance = (npc.Root.transform.position - player.Grip).sqrMagnitude;
             if (contact != null && (result.Fraction > selected.Fraction
@@ -1525,6 +1574,8 @@ public sealed partial class MasterController : MonoBehaviour
 
     private void ApplySingleContact(SingleNpc npc, CombatResult result, CombatPose player, CombatPose enemy, bool guardHeld)
     {
+        if (CombatReaction.IsHit(result.Outcome) && (result.PushedPlayer == 0
+            ? showdown.IsInvulnerable(matchTime) : npc.DamageWindow.IsInvulnerable(matchTime))) return;
         // Capture recoil at the observed impact, not the frame's later pose.
         // An NPC stops its authored cut here instead of leaving the blade
         // inside the player while waiting for the next preparation.
@@ -1533,7 +1584,7 @@ public sealed partial class MasterController : MonoBehaviour
         if (result.Attacker == 1 || result.Outcome == CombatOutcome.Clash) npc.VisualBasePose = npcContact;
         if (!guardHeld && result.Kind != AttackKind.Thrust)
             ApplyPose(first, SwordAtContact(first.Player, first.TargetPose, player, result.ContactFraction));
-        singleResolvingUntil = matchTime + result.HitStopSeconds + DuelMatch.PushSeconds;
+        singleResolvingUntil = matchTime + CombatDamageWindow.Seconds;
         singleStroke.Interrupt();
         npc.ContactResolved = true;
         npc.Stroke.Consume();
@@ -1552,7 +1603,10 @@ public sealed partial class MasterController : MonoBehaviour
         presentation.PlaySingleContact(position, blocked, !playerAttacked && !blocked, matchTime);
         BeginSingleReaction(npc, result, player, enemy);
         if (result.PushedPlayer == 1)
+        {
             npc.StunnedUntil = matchTime + CombatReaction.Duration(result);
+            npc.DamageWindow.Protect(matchTime);
+        }
         else if (result.PushedPlayer == 0)
         {
             singleStunnedUntil = matchTime + CombatReaction.Duration(result);
@@ -1560,6 +1614,7 @@ public sealed partial class MasterController : MonoBehaviour
         }
         if (blocked)
         {
+            if (result.PushedPlayer == 0) showdown.Protect(matchTime);
             // Only the current opponent can retaliate. Every counter starts
             // with a new announced preparation; easy waits for player recovery.
             if (playerAttacked && npc == singleActiveNpc)
@@ -1652,11 +1707,12 @@ public sealed partial class MasterController : MonoBehaviour
                 continue;
             }
             if (npc.Stroke.Active && !npc.ContactResolved
-                && matchTime >= singleResolvingUntil)
+                && matchTime + 1e-9 >= singleResolvingUntil)
             {
                 CombatPose player = PlayerDefencePose(first), enemy = NpcCombatPose(npc);
                 CombatResult result = CombatExchange.Resolve(AttackKind.None, AttackKind.Cut, player, enemy,
-                    input.Valid && input.GuardHeld, false).Contact;
+                    input.Valid && input.GuardHeld, false,
+                    firstInvulnerable: showdown.IsInvulnerable(matchTime), secondInvulnerable: npc.DamageWindow.IsInvulnerable(matchTime)).Contact;
                 if (result.Outcome != CombatOutcome.None) ApplySingleContact(npc, result, player, enemy, input.GuardHeld);
             }
             npc.PreviousGrip = npc.Root.transform.TransformPoint(npc.VisualBasePose.Position);

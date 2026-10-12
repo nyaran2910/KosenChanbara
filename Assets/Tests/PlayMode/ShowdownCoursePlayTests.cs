@@ -199,7 +199,7 @@ public sealed class ShowdownCoursePlayTests
         {
             object enemy = enemies[i];
             Transform root = ((GameObject)enemy.GetType().GetField("Root").GetValue(enemy)).transform;
-            root.position = Player.position + new Vector3(i == 0 ? -1.3f : 1.3f, 0f, 1.6f);
+            root.position = Player.position + new Vector3(i == 0 ? -1.3f : 1.3f, 0f, 2.7f);
             root.rotation = Quaternion.LookRotation(Player.position - root.position);
             enemy.GetType().GetField("NextAttack").SetValue(enemy, 0d);
         }
@@ -242,7 +242,7 @@ public sealed class ShowdownCoursePlayTests
         Transform sword = (Transform)enemyType.GetField("Sword").GetValue(enemy);
         // End a committed swing while its sword is upright: the player is close
         // enough to the challenger, but its blade points away from the body.
-        root.position = Player.position + Vector3.forward * 1.8f;
+        root.position = Player.position + Vector3.forward * 3f;
         root.rotation = Quaternion.LookRotation(Vector3.back);
         sword.rotation = Quaternion.LookRotation(Vector3.up, Vector3.forward);
         enemyType.GetField("VisualBasePose").SetValue(enemy, new SwordPose(sword.localPosition, sword.localRotation));
@@ -428,7 +428,7 @@ public sealed class ShowdownCoursePlayTests
         object enemy = Field<IList>(master, "singleNpcs")[0];
         Transform root = ((GameObject)RuntimeField(enemy, "Root")).transform;
         Transform sword = (Transform)RuntimeField(enemy, "Sword");
-        root.position = Player.position + Player.forward * 1.8f;
+        root.position = Player.position + Player.forward * 3f;
         root.rotation = Quaternion.LookRotation(-Player.forward);
         SetRuntimeField(enemy, "GuardOctant", 0);
         SetRuntimeField(enemy, "NextAttack", 0d);
@@ -572,7 +572,7 @@ public sealed class ShowdownCoursePlayTests
         Call(master, "SpawnSingleNpc");
         object enemy = Field<IList>(master, "singleNpcs")[0];
         Transform root = ((GameObject)RuntimeField(enemy, "Root")).transform;
-        root.position = Player.position + Player.forward * 1.8f;
+        root.position = Player.position + Player.forward * 3f;
         root.rotation = Quaternion.LookRotation(-Player.forward);
         for (int preparation = 0; preparation < 32; preparation++)
         {
@@ -602,7 +602,7 @@ public sealed class ShowdownCoursePlayTests
         Call(master, "SpawnSingleNpc");
         object enemy = Field<IList>(master, "singleNpcs")[0];
         Transform root = ((GameObject)RuntimeField(enemy, "Root")).transform;
-        root.position = Player.position + Player.forward * 1.8f;
+        root.position = Player.position + Player.forward * 3f;
         root.rotation = Quaternion.LookRotation(-Player.forward);
         SetRuntimeField(enemy, "NextAttack", 0d);
         MoveSingleNpcsWithReadyView(.01f);
@@ -850,10 +850,10 @@ public sealed class ShowdownCoursePlayTests
         // the two characters, while the actual guard blade stays player-local.
         int[] readyOctants = { 2, 1, 0, 7, 2, 1, 0, 7 };
         foreach (float dt in new[] { .005f, .01f, 1f / 60f, 1f / 30f })
-        foreach (float distance in new[] { 1.5f, 1.8f, 2.35f })
+        foreach (float distance in new[] { 3f, 3.05f, 3.1f })
         for (int scenario = 0; scenario < 13; scenario++)
         {
-            if (scenario >= 8 && distance != 1.8f) continue;
+            if (scenario >= 8 && distance != 3f) continue;
             Call(master, "ResetMatch");
             bool shouldBlock = false;
             Vector3 guardDirection = ShowdownCombat.ReadyDirection(scenario < 8 ? scenario : scenario == 8 ? 2 : 0);
@@ -1014,7 +1014,7 @@ public sealed class ShowdownCoursePlayTests
         {
             object enemy = enemies[i];
             Transform root = ((GameObject)RuntimeField(enemy, "Root")).transform;
-            root.position = Player.position + new Vector3(i == 0 ? -1.5f : 1.5f, 0f, 2.65f);
+            root.position = Player.position + new Vector3(i == 0 ? -1.5f : 1.5f, 0f, 4.2f);
             root.rotation = Quaternion.LookRotation(Player.position - root.position);
             SetRuntimeField(enemy, "NextAttack", 0d);
         }
@@ -1087,7 +1087,7 @@ public sealed class ShowdownCoursePlayTests
             object enemy = Field<IList>(master, "singleNpcs")[0];
             Transform root = ((GameObject)RuntimeField(enemy, "Root")).transform;
             Transform sword = (Transform)RuntimeField(enemy, "Sword");
-            root.position = Player.position + Player.forward * 1.8f;
+            root.position = Player.position + Player.forward * 3f;
             root.rotation = Quaternion.LookRotation(-Player.forward);
             SetRuntimeField(enemy, "OpeningAttack", false);
             SetRuntimeField(enemy, "NextAttack", 0d);

@@ -58,6 +58,15 @@ namespace SchoolFestival.Combat
 
         public bool TrySpawn() => CanSpawn && run.TrySpawn();
 
+        public Vector3 JumpToSection(int zeroBasedSection)
+        {
+            run.StartAtSection(zeroBasedSection);
+            SectionNumber = zeroBasedSection + 1;
+            Phase = ShowdownCoursePhase.Fighting;
+            TravelProgress = travelDistance = 0f;
+            return stops[zeroBasedSection];
+        }
+
         public bool TryPlanRoundPositions(Vector3 player, Vector3 forward, out Vector3[] positions)
             => ShowdownCombat.TryPlanRound(player, forward, center, boundaryRadius, out positions);
 

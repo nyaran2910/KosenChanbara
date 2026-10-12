@@ -32,12 +32,12 @@ namespace SchoolFestival.Combat
     public static class ShowdownCombat
     {
         public const float BladeStart = CombatContact.BladeStart, BladeLength = CombatContact.BladeLength, BodyRadius = CombatContact.BodyRadius;
-        public const float MinimumSpacing = 1.15f, AttackRange = 2.35f;
+        public const float MinimumSpacing = 1.15f, AttackRange = 3.1f;
         public const float MinimumSpawnDistance = 4f;
         public const float OpeningAttackRange = 4.5f, AttackCueSeconds = .5f;
         public const float OpponentHandoffSeconds = .18f;
         public const float WaitingWanderRadius = 1.2f, WaitingWalkSpeed = 1.15f;
-        public const float NextOpponentRange = 3.5f;
+        public const float NextOpponentRange = 4.35f;
         public const float EngagementFacingAngle = 12f, FocusHoldSeconds = .15f;
         public const float VisibleWalkSeconds = 1f, TransitionFadeSeconds = 1f;
         public const double HitFollowupDelaySeconds = .3;

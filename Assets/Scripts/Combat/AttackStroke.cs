@@ -28,10 +28,15 @@ namespace SchoolFestival.Combat
             reversePrepared = false; requiredSpeed = MinimumCutSpeed;
         }
 
-        public void Consume() { consumed = true; takebackTravel = 0f; travel = bladeTravel = 0f; Kind = AttackKind.None; }
+        public void Consume()
+        {
+            RememberCutSide();
+            consumed = true; takebackTravel = 0f; travel = bladeTravel = 0f; Kind = AttackKind.None;
+        }
 
         public void Interrupt()
         {
+            RememberCutSide();
             if (Active) takebackTravel = 0f;
             consumed |= Active;
             travel = bladeTravel = 0f; Kind = StartedKind = AttackKind.None;
@@ -95,6 +100,7 @@ namespace SchoolFestival.Combat
                 // guard/reversal/rest, but never accumulate a queued attack.
                 if (Active) consumed = true;
                 Kind = AttackKind.None; travel = bladeTravel = 0f;
+                if (consumed) RearmFromPreparation(pose, speed);
                 if (step < .05f || speed < 5f)
                 {
                     if (double.IsNaN(quietSince)) quietSince = now;
@@ -147,13 +153,20 @@ namespace SchoolFestival.Combat
                 }
                 else travel = bladeTravel = 0f;
                 if (travel >= MinimumCutSweep - .001f && bladeTravel >= MinimumCutMotion - .00001f && CrossesFront(pose))
-                { Kind = StartedKind = AttackKind.Cut; until = now + CutSeconds; }
+                { Kind = StartedKind = AttackKind.Cut; RememberCutSide(); until = now + CutSeconds; }
             }
             return AttackAllowed(now);
         }
 
         private void StartThrust(double now)
         { Kind = StartedKind = AttackKind.Thrust; until = now + ThrustSeconds; thrustStartedAt = now; consumed = false; travel = bladeTravel = takebackTravel = 0f; swingAxis = prepareSide = Vector3.zero; reversePrepared = false; requiredSpeed = MinimumCutSpeed; }
+
+        private void RememberCutSide()
+        {
+            if (Kind != AttackKind.Cut) return;
+            Vector3 side = -Vector3.Cross(swingAxis, previousForward);
+            if (side.sqrMagnitude > .00001f) prepareSide = side.normalized;
+        }
 
         private void ResetMotion()
         { Kind = AttackKind.None; consumed = reversePrepared = false; travel = bladeTravel = takebackTravel = 0f;
