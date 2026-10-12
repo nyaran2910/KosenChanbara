@@ -19,7 +19,6 @@ public sealed class ControllerAxisCalibrationPanel : MonoBehaviour
     private GameObject entryCanvas;
     private double entryAfter;
     private bool SetupEntryVisible => flow != null && flow.PauseOpen
-        && flow.CurrentScreen != GameFlowController.Screen.Playing
         && flow.CurrentScreen != GameFlowController.Screen.Preview;
     private GameObject canvas, page;
     private Font font;
@@ -53,10 +52,7 @@ public sealed class ControllerAxisCalibrationPanel : MonoBehaviour
         BuildEntry();
     }
 
-    // Calibration belongs to setup before play. The 2026-10-10 gameplay pause
-    // explicitly has only three actions plus display choices; retain this
-    // Esc setup entry on the title/selection screens without adding a fourth
-    // in-game action.
+    // Axis presets are available from both setup and the suspended game.
     private void BuildEntry()
     {
         entryCanvas = new GameObject("Axis calibration settings entry", typeof(RectTransform), typeof(Canvas),
@@ -76,9 +72,7 @@ public sealed class ControllerAxisCalibrationPanel : MonoBehaviour
         EntryButton.onClick.AddListener(() =>
         {
             if (!SetupEntryVisible || Time.realtimeSinceStartupAsDouble < entryAfter) return;
-            transform.Find("Connection pause").gameObject.SetActive(false);
-            PhoneControllerHub.EnsureInstance().SetOverlayVisible(false);
-            Open();
+            flow.OpenAxisCalibration();
         });
         GameObject label = new GameObject("Label", typeof(RectTransform), typeof(Text)); label.transform.SetParent(go.transform, false);
         Text text = label.GetComponent<Text>(); text.font = font; text.text = "軸合わせ"; text.fontSize = 24;

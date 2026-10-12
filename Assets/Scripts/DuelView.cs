@@ -11,7 +11,7 @@ public sealed class DuelView
     private Transform focusTarget;
     private bool smoothFocus, focusInitialized;
     private double lastTick = -1;
-    private Vector3 focusPosition, focusVelocity, cameraPosition, cameraVelocity;
+    private Vector3 focusPosition, focusVelocity, cameraPosition, cameraVelocity, previousPlayerPosition;
     private Quaternion focusRotation;
     private readonly Vector3 basePosition;
     private readonly Quaternion baseRotation;
@@ -139,17 +139,26 @@ public sealed class DuelView
             if (!focusInitialized)
             {
                 cameraPosition = desiredPosition; focusPosition = desiredFocus;
+                previousPlayerPosition = player.position;
                 focusRotation = Quaternion.LookRotation(focusPosition - cameraPosition);
                 focusVelocity = cameraVelocity = Vector3.zero; focusInitialized = true;
             }
             float dt = lastTick < 0 ? 0f : Mathf.Clamp((float)(now - lastTick), 0f, .1f);
             if (dt > 0f)
             {
+                // Recoil moves both fighters together. Carry the camera and
+                // its remembered focus with the player before smoothing the
+                // relative orbit/target change, so repeated pushes cannot
+                // leave the viewpoint metres behind the combatants.
+                Vector3 translation = player.position - previousPlayerPosition;
+                cameraPosition += translation;
+                focusPosition += translation;
                 focusPosition = Vector3.SmoothDamp(focusPosition, desiredFocus, ref focusVelocity, .12f, Mathf.Infinity, dt);
                 cameraPosition = Vector3.SmoothDamp(cameraPosition, desiredPosition, ref cameraVelocity, .16f, Mathf.Infinity, dt);
                 Quaternion desiredRotation = Quaternion.LookRotation(focusPosition - cameraPosition);
                 focusRotation = Quaternion.Slerp(focusRotation, desiredRotation, 1f - Mathf.Exp(-dt / .1f));
             }
+            previousPlayerPosition = player.position;
             camera.transform.SetPositionAndRotation(cameraPosition + player.rotation * shake, focusRotation * shakeRotation);
         }
         else

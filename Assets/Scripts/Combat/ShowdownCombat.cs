@@ -41,7 +41,7 @@ namespace SchoolFestival.Combat
         public const float EngagementFacingAngle = 12f, FocusHoldSeconds = .15f;
         public const float VisibleWalkSeconds = 1f, TransitionFadeSeconds = 1f;
         public const double HitFollowupDelaySeconds = .3;
-        public const int AttackReadyDirectionCount = 5;
+        public const int AttackReadyDirectionCount = 5; // Legacy fixed-angle geometry fixtures only.
 
         // Across 100 challengers: sixteen two-heart and eight three-heart enemies.
         public static int EnemyHearts(int challengerNumber)
@@ -69,19 +69,56 @@ namespace SchoolFestival.Combat
             => attackTimer > swingSeconds && attackTimer <= swingSeconds + AttackCueSeconds
                 ? Mathf.Clamp01(1f - (attackTimer - swingSeconds) / AttackCueSeconds) : -1f;
 
-        // Guards retain all eight directions, clockwise from overhead.
+        // Fixed samples for legacy geometry fixtures. Live guards use a
+        // floating angle and move through the orientations between them.
         public static Vector3 ReadyDirection(int octant)
         {
             float angle = ((octant % 8 + 8) % 8) * Mathf.PI / 4f;
             return new Vector3(Mathf.Sin(angle), Mathf.Cos(angle), 0f);
         }
 
-        // Cuts start overhead, diagonally above, or at either side. The lower
-        // three guard orientations remain available without upward attacks.
+        // Fixed upper samples for legacy stroke fixtures. Live preparation
+        // samples the entire upper semicircle through UpperReadyDirection.
         public static Vector3 AttackReadyDirection(int index)
         {
             index = (index % AttackReadyDirectionCount + AttackReadyDirectionCount) % AttackReadyDirectionCount;
             return ReadyDirection(index < 3 ? index : index + 3);
+        }
+
+        public static Vector3 PlaneDirection(float degrees)
+        {
+            float radians = degrees * Mathf.Deg2Rad;
+            return new Vector3(Mathf.Sin(radians), Mathf.Cos(radians), 0f);
+        }
+
+        public static float GuardAngleDegrees(float initialAngle, float phase, double elapsed, int maximumHearts)
+        {
+            float age = Mathf.Max(0f, (float)elapsed);
+            float speed = Mathf.Lerp(20f, 36f, (Mathf.Clamp(maximumHearts, 1, 3) - 1) * .5f);
+            return Mathf.Repeat(initialAngle + speed * age
+                + 12f * (Mathf.Sin(age * .7f + phase) - Mathf.Sin(phase)), 360f);
+        }
+
+        public static Vector3 UpperReadyDirection(float degrees)
+        {
+            Vector3 direction = PlaneDirection(Mathf.Clamp(degrees, -90f, 90f));
+            direction.y = Mathf.Max(0f, direction.y);
+            return direction.normalized;
+        }
+
+        public static Vector3 WindupReadyDirection(float degrees, float phase, float progress)
+        {
+            float t = Mathf.Clamp01(progress);
+            float envelope = Mathf.Sin(t * Mathf.PI);
+            float variation = 4f * envelope * envelope * Mathf.Sin(t * Mathf.PI * 2f + phase);
+            return UpperReadyDirection(degrees + variation);
+        }
+
+        public static Vector3 CommitUpperReady(Vector3 visibleDirection, Vector3 announcedDirection)
+        {
+            Vector3 projected = new Vector3(visibleDirection.x, Mathf.Max(0f, visibleDirection.y), 0f);
+            return visibleDirection.y >= -.00001f && projected.sqrMagnitude > .0001f
+                ? projected.normalized : announcedDirection;
         }
 
         public static float OpponentHandoff(ShowdownDifficulty difficulty)

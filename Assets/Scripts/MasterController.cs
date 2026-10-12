@@ -63,6 +63,7 @@ public sealed partial class MasterController : MonoBehaviour
         public int CombatGeneration = -1;
         public bool CombatBaseline, CombatGuard;
         public double ThrustAt = -100d;
+        public SwordPose ThrustFrom;
     }
 
     private sealed class SingleNpc
@@ -85,10 +86,18 @@ public sealed partial class MasterController : MonoBehaviour
         public bool ContactResolved, CombatGuardHeld;
         public bool OpeningAttack, ApproachAttack, AdvanceDuringWindup, ContinuousAttack;
         public SingleEnemyStatus Status;
-        public int GuardOctant;
+        // -1 is live continuous motion. 0..7 is an explicit legacy geometry
+        // fixture override and is never selected by normal NPC generation.
+        public int GuardOctant = -1;
+        public float GuardInitialAngle, GuardMotionPhase, GuardBias, GuardBiasTarget;
+        public double GuardMotionStarted;
+        public float AttackReadyAngle, AttackReadyPhase;
+        public Vector3 LastGeneratedReadyDirection;
+        public bool AttackReadyOverride, AttackReadyCommitted;
         public int Hearts, MaximumHearts;
         public double StunnedUntil, RecoveryUntil;
-        public double NextAttack, NextGuardChange, AttackNotBefore;
+        public double NextAttack, AttackNotBefore;
+        public double NextGuardChange; // Legacy fixture timing data; never drives live guard direction.
         public bool Engaged;
         public double FacingSince = double.PositiveInfinity;
         public bool Defeated;
@@ -431,6 +440,7 @@ public sealed partial class MasterController : MonoBehaviour
         {
             player.MotionGeneration = motion.PoseGeneration;
             player.InputGeneration++;
+            player.ThrustAt = -100d;
             presentation.ClearMotionHistory();
         }
         // Keyboard remains an independent input even with a connected controller.
@@ -467,15 +477,24 @@ public sealed partial class MasterController : MonoBehaviour
         bool stunned = !IsCharacterPreview && (IsSingleMode ? SinglePlayerBlocked
             : match.IsStunned(playerIndex, SwordPoseTime) || match.IsResolving(SwordPoseTime));
         thrust = thrust && motionValid && !guard && !stunned && forwardAngle <= AttackStroke.ThrustAngle;
+        if (!valid) player.ThrustAt = -100d;
         if (thrust)
         {
-            // A fresh thrust takes over the point immediately, including just
-            // after guard release; its own chamber/drive controls the motion.
+            // Chamber briefly into the player's exact forward direction,
+            // regardless of a small sensor angle or the opposite viewport.
+            player.ThrustFrom = player.TargetPose;
             player.GuardTransition.Reset();
             player.ThrustAt = SwordPoseTime;
-            presentation.ThrustCharacter(playerIndex, player.Player.TransformDirection(player.TargetRotation * Vector3.forward),
+            presentation.ThrustCharacter(playerIndex, player.Player.forward,
                 SwordPoseTime, ThrustPose.DurationSeconds);
             UpdatePose(player, false);
+        }
+        double thrustAge = SwordPoseTime - player.ThrustAt;
+        if (!guard && thrustAge >= 0d && thrustAge < ThrustPose.DurationSeconds)
+        {
+            // Pose alignment and recovery are animation, never new cut input.
+            forwardAngle = 0f;
+            speed = 0f;
         }
         return new CombatInput(forwardAngle, speed, guard, valid, player.InputGeneration, thrust);
     }
@@ -513,7 +532,13 @@ public sealed partial class MasterController : MonoBehaviour
         player.TargetPose = player.GuardTransition.Update(target, guard, SwordPoseTime);
         if (guard) player.ThrustAt = -100d;
         float age = (float)(SwordPoseTime - player.ThrustAt);
-        player.TargetPose = ThrustPose.Apply(player.TargetPose, age);
+        if (age >= 0f && age < ThrustPose.DurationSeconds)
+        {
+            SwordPose forwardPose = SwordPoseMath.Calculate(Quaternion.identity, false,
+                new SwordPoseSettings(PlayerChestCenter(player),
+                    gripRadius, guardRadius, guardPlaneOffset, guardHeight), ref player.LastGuardDirection);
+            player.TargetPose = ThrustPose.ApplyCentered(player.TargetPose, player.ThrustFrom, forwardPose, age);
+        }
     }
 
     private Vector3 PlayerChestCenter(PlayerSword player)
@@ -1046,7 +1071,9 @@ public sealed partial class MasterController : MonoBehaviour
             Root = root,
             Sword = sword,
             Avatar = new DuelAvatar(root.transform, sword),
-            GuardOctant = Random.Range(0, 8),
+            GuardInitialAngle = Random.Range(0f, 360f),
+            GuardMotionPhase = Random.Range(0f, Mathf.PI * 2f),
+            GuardMotionStarted = matchTime,
             ChestCenter = characterChestCenters != null && character < characterChestCenters.Length
                 ? characterChestCenters[character] : chestCenter,
             Hearts = maximumHearts,
@@ -1115,11 +1142,6 @@ public sealed partial class MasterController : MonoBehaviour
             bool beganAttack = false;
             if (npc.AttackTimer < 0f)
             {
-                if (npc == singleActiveNpc && matchTime >= npc.NextGuardChange)
-                {
-                    npc.GuardOctant = (npc.GuardOctant + Random.Range(1, 8)) % 8;
-                    npc.NextGuardChange = matchTime + SingleGuardInterval(npc);
-                }
                 if (npc == singleActiveNpc) AdvanceSingleNpc(npc, dt, difficulty.ApproachSpeed,
                     npc.Engaged && focusReady ? 1.8f : ShowdownCombat.NextOpponentRange);
                 else if (npc == approaching) AdvanceSingleNpc(npc, dt, difficulty.ApproachSpeed, ShowdownCombat.NextOpponentRange);
@@ -1153,7 +1175,11 @@ public sealed partial class MasterController : MonoBehaviour
                     Vector3 defenceCenter = first.Player.TransformPoint(PlayerChestCenter(first)
                         + Vector3.up * guardHeight + Vector3.forward * guardPlaneOffset);
                     npc.AttackTarget = defenceCenter;
-                    npc.AttackReadyDirection = ShowdownCombat.AttackReadyDirection(Random.Range(0, ShowdownCombat.AttackReadyDirectionCount));
+                    npc.AttackReadyAngle = Random.Range(-90f, 90f);
+                    npc.AttackReadyPhase = Random.Range(0f, Mathf.PI * 2f);
+                    npc.AttackReadyDirection = ShowdownCombat.WindupReadyDirection(npc.AttackReadyAngle, npc.AttackReadyPhase, 0f);
+                    npc.LastGeneratedReadyDirection = npc.AttackReadyDirection;
+                    npc.AttackReadyOverride = npc.AttackReadyCommitted = false;
                     var cutSettings = new SwordPoseSettings(npc.ChestCenter, gripRadius, guardRadius, guardPlaneOffset, guardHeight);
                     npc.AttackAim = ShowdownCombat.CutAim(root.InverseTransformPoint(defenceCenter), cutSettings);
                     SwordPose start = ShowdownCombat.CutPose(npc.AttackAim, npc.AttackReadyDirection, 0f, cutSettings);
@@ -1177,10 +1203,29 @@ public sealed partial class MasterController : MonoBehaviour
             {
                 float before = npc.AttackTimer;
                 npc.AttackTimer = Mathf.Max(0f, npc.AttackTimer - dt);
-                if (npc.AdvanceDuringWindup && !beganAttack && before > npc.SwingSeconds)
+                if (before >= npc.SwingSeconds && !npc.AttackReadyCommitted)
                 {
-                    float preparingDelta = Mathf.Min(dt, before - npc.SwingSeconds);
-                    AdvanceSingleNpc(npc, preparingDelta, difficulty.ApproachSpeed);
+                    // Keep explicit legacy stroke fixtures stable. Live NPCs
+                    // own this direction and vary it only during preparation.
+                    if (Vector3.Angle(npc.AttackReadyDirection, npc.LastGeneratedReadyDirection) > .01f) npc.AttackReadyOverride = true;
+                    if (npc.AttackTimer <= npc.SwingSeconds)
+                    {
+                        float previousPreparation = (npc.WindupSeconds + npc.SwingSeconds - before) / npc.WindupSeconds;
+                        if (!npc.AttackReadyOverride && previousPreparation >= .5f)
+                            npc.AttackReadyDirection = ShowdownCombat.CommitUpperReady(npc.VisualBasePose.Direction, npc.AttackReadyDirection);
+                        npc.AttackReadyCommitted = true;
+                    }
+                    else if (!npc.AttackReadyOverride)
+                    {
+                        float preparation = (npc.WindupSeconds + npc.SwingSeconds - npc.AttackTimer) / npc.WindupSeconds;
+                        npc.AttackReadyDirection = ShowdownCombat.WindupReadyDirection(npc.AttackReadyAngle, npc.AttackReadyPhase, preparation);
+                    }
+                    npc.LastGeneratedReadyDirection = npc.AttackReadyDirection;
+                }
+                if (before >= npc.SwingSeconds)
+                {
+                    if (npc.AdvanceDuringWindup && !beganAttack && before > npc.SwingSeconds)
+                        AdvanceSingleNpc(npc, Mathf.Min(dt, before - npc.SwingSeconds), difficulty.ApproachSpeed);
                     var movingSettings = new SwordPoseSettings(npc.ChestCenter, gripRadius, guardRadius, guardPlaneOffset, guardHeight);
                     npc.AttackAim = ShowdownCombat.CutAim(root.InverseTransformPoint(npc.AttackTarget), movingSettings);
                     SwordPose movingStart = ShowdownCombat.CutPose(npc.AttackAim, npc.AttackReadyDirection, 0f, movingSettings);
@@ -1365,7 +1410,11 @@ public sealed partial class MasterController : MonoBehaviour
         // Their own stagger still forces the shared guard-only recovery.
         if (npc == singleActiveNpc && npc.ContinuousAttack && matchTime >= npc.StunnedUntil) return;
         // Only the engaged opponent guards; the rest keep their swords relaxed.
-        Vector3 localDirection = ShowdownCombat.ReadyDirection(npc.GuardOctant);
+        if (npc.GuardOctant < 0 && dt > 0f)
+            npc.GuardBias = Mathf.MoveTowards(npc.GuardBias, npc.GuardBiasTarget, 30f * dt);
+        Vector3 localDirection = npc.GuardOctant >= 0 ? ShowdownCombat.ReadyDirection(npc.GuardOctant)
+            : ShowdownCombat.PlaneDirection(ShowdownCombat.GuardAngleDegrees(npc.GuardInitialAngle, npc.GuardMotionPhase,
+                matchTime - npc.GuardMotionStarted, npc.MaximumHearts) + npc.GuardBias);
         npc.GuardDirection = npc.Root.transform.TransformDirection(localDirection);
         if (npc.AttackTimer < 0f)
         {
@@ -1533,7 +1582,8 @@ public sealed partial class MasterController : MonoBehaviour
             npc.Avatar.Stagger(direction, matchTime, CombatReaction.RecoverySeconds, result.HitStopSeconds);
             presentation.ShowStagger(npc.Avatar, matchTime, CombatReaction.RecoverySeconds);
             if (npc.Hearts <= 0) RemoveSingleNpc(npc);
-            else npc.GuardOctant = (npc.GuardOctant + 2) % 8;
+            else if (npc.GuardOctant >= 0) npc.GuardOctant = (npc.GuardOctant + 2) % 8; // Explicit legacy fixture.
+            else npc.GuardBiasTarget += 90f;
         }
         else if (showdown.Damage(matchTime, guardHeld))
         {

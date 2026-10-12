@@ -44,6 +44,40 @@ namespace SchoolFestival.Combat
             return direction.normalized;
         }
 
+        // Only the observed portion moving toward the opponent is offensive.
+        // Preserve its original frame fraction for impact effects and freezing.
+        public static float CutApproachFraction(CombatPose pose)
+        {
+            Vector3 before = pose.PreviousBlade.normalized, after = pose.Blade.normalized;
+            float angle = Vector3.Angle(before, after) * Mathf.Deg2Rad;
+            if (angle < .0001f) return 0f;
+            Vector3 tangent = angle > Mathf.PI - .001f
+                ? Vector3.Slerp(before, after, .5f).normalized
+                : (after - before * Mathf.Cos(angle)).normalized;
+            Vector3 forward = pose.Forward.normalized;
+            float a = Vector3.Dot(before, forward), b = Vector3.Dot(tangent, forward);
+            float peakAngle = Mathf.Atan2(b, a);
+            float fraction = peakAngle < 0f
+                ? (Vector3.Dot(after, forward) > a + .000001f ? 1f : 0f)
+                : Mathf.Clamp01(peakAngle / angle);
+            return Vector3.Dot(Vector3.Slerp(before, after, fraction).normalized, forward) > a + .000001f
+                ? fraction : 0f;
+        }
+
+        public static float ThrustForwardFraction(CombatPose pose)
+        {
+            if (Vector3.Angle(pose.PreviousBlade, pose.Forward) <= 1f) return 0f;
+            float low = 0f, high = 1f;
+            for (int step = 0; step < 18; step++)
+            {
+                float middle = (low + high) * .5f;
+                if (Vector3.Angle(Vector3.Slerp(pose.PreviousBlade, pose.Blade, middle), pose.Forward) <= 1f)
+                    high = middle;
+                else low = middle;
+            }
+            return high;
+        }
+
         private static bool CutCrossesGuard(CombatPose attack, Vector3 guardedBlade, Vector3 defenceForward)
         {
             Vector3 cut = Vector3.ProjectOnPlane(IncomingCutDirection(attack), defenceForward);
@@ -69,14 +103,19 @@ namespace SchoolFestival.Combat
         {
             if (!AcceptsMovement(kind, attack)
                 || Vector3.Dot(defence.BodyCenter - attack.BodyCenter, attack.Forward) <= 0f) return default;
-            bool body = TrySweptBladeTouchesBody(attack.PreviousGrip, attack.PreviousBlade, attack.Grip,
-                attack.Blade, defence.BodyCenter, out float bodyHit,
+            float until = kind == AttackKind.Cut ? CutApproachFraction(attack) : 1f;
+            float from = kind == AttackKind.Thrust ? ThrustForwardFraction(attack) : 0f;
+            Sample(attack, from, out Vector3 startingGrip, out Vector3 startingBlade);
+            Sample(attack, until, out Vector3 offensiveGrip, out Vector3 offensiveBlade);
+            bool body = TrySweptBladeTouchesBody(startingGrip, startingBlade, offensiveGrip,
+                offensiveBlade, defence.BodyCenter, out float bodyHit,
                 kind == AttackKind.Thrust ? ThrustExtraPadding : 0f);
+            bodyHit = from + bodyHit * (until - from);
             bool facing = Vector3.Dot(attack.BodyCenter - defence.BodyCenter, defence.Forward) > 0f;
             bool ready = guard && facing;
             float guardHit = float.PositiveInfinity;
             bool intercepted = ready && TryGuardInterception(kind, attack, defence,
-                body ? bodyHit : 1f, out guardHit);
+                body ? bodyHit : until, out guardHit, from);
             if (intercepted && (kind == AttackKind.Cut || body))
                 return new CombatContactResult(CombatOutcome.GuardSuccess, guardHit);
             if (ready && kind == AttackKind.Cut && body && !TouchesGuardHilt(attack, defence, bodyHit)
@@ -113,7 +152,8 @@ namespace SchoolFestival.Combat
             => TryBladesClash(first, second, out _);
 
         private static bool AcceptsMovement(AttackKind kind, CombatPose pose)
-            => kind == AttackKind.Cut ? pose.AngularMoving : kind == AttackKind.Thrust
+            => kind == AttackKind.Cut ? pose.AngularMoving && CutApproachFraction(pose) > 0f : kind == AttackKind.Thrust
+                && Vector3.Angle(pose.Blade, pose.Forward) <= 1f
                 && Vector3.Dot(pose.Grip - pose.PreviousGrip, pose.Forward) > .0001f;
 
         public static bool TryBladesClash(CombatPose first, CombatPose second, out float fraction,
@@ -124,9 +164,15 @@ namespace SchoolFestival.Combat
             int steps = Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(Vector3.Angle(first.PreviousBlade, first.Blade),
                 Vector3.Angle(second.PreviousBlade, second.Blade)) / 5f), Mathf.CeilToInt(Mathf.Max(
                 Vector3.Distance(first.PreviousGrip, first.Grip), Vector3.Distance(second.PreviousGrip, second.Grip)) / .08f));
-            for (int i = 0; i <= steps; i++)
+            float from = Mathf.Max(firstKind == AttackKind.Thrust ? ThrustForwardFraction(first) : 0f,
+                secondKind == AttackKind.Thrust ? ThrustForwardFraction(second) : 0f);
+            float until = Mathf.Min(firstKind == AttackKind.Cut ? CutApproachFraction(first) : 1f,
+                secondKind == AttackKind.Cut ? CutApproachFraction(second) : 1f);
+            if (from > until) return false;
+            int samples = Mathf.CeilToInt((until - from) * steps);
+            for (int i = 0; i <= samples; i++)
             {
-                float t = (float)i / steps;
+                float t = Mathf.Min(from + (float)i / steps, until);
                 Vector3 a = Vector3.Lerp(first.PreviousGrip, first.Grip, t), b = Vector3.Lerp(second.PreviousGrip, second.Grip, t);
                 Vector3 u = Vector3.Slerp(first.PreviousBlade, first.Blade, t).normalized;
                 Vector3 v = Vector3.Slerp(second.PreviousBlade, second.Blade, t).normalized;
@@ -182,14 +228,14 @@ namespace SchoolFestival.Combat
         }
 
         private static bool TryGuardInterception(AttackKind kind, CombatPose attack, CombatPose defence,
-            float until, out float fraction)
+            float until, out float fraction, float from = 0f)
         {
             fraction = float.PositiveInfinity;
             int steps = Mathf.Max(SweepSteps(attack), SweepSteps(defence));
-            int samples = Mathf.CeilToInt(Mathf.Clamp01(until) * steps);
+            int samples = Mathf.CeilToInt(Mathf.Clamp01(until - from) * steps);
             for (int i = 0; i <= samples; i++)
             {
-                float t = Mathf.Min((float)i / steps, until);
+                float t = Mathf.Min(from + (float)i / steps, until);
                 Sample(attack, t, out Vector3 origin, out Vector3 axis);
                 Sample(defence, t, out Vector3 guardGrip, out Vector3 guardAxis);
                 if (guardAxis.sqrMagnitude < .5f

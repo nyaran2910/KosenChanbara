@@ -253,6 +253,59 @@ public sealed class ShowdownCombatTests
             Assert.That(ShowdownCombat.ReadyDirection(octant).y, Is.LessThan(-.7f));
     }
 
+    [TestCase(30, 1)]
+    [TestCase(60, 2)]
+    [TestCase(144, 3)]
+    public void LiveGuardMovesThroughEveryAngleWithoutHoldsOrOctantSteps(int fps, int hearts)
+    {
+        float previous = ShowdownCombat.GuardAngleDegrees(13.27f, .83f, 0d, hearts);
+        var visited = new bool[8];
+        int intermediate = 0;
+        for (int frame = 1; frame <= fps * 40; frame++)
+        {
+            float angle = ShowdownCombat.GuardAngleDegrees(13.27f, .83f, (double)frame / fps, hearts);
+            float change = Mathf.DeltaAngle(previous, angle);
+            Assert.That(change, Is.InRange(10f / fps - .001f, 45f / fps + .001f),
+                "The guard drifts continuously, including across zero degrees.");
+            visited[Mathf.FloorToInt(angle / 45f)] = true;
+            if (Mathf.Abs(Mathf.DeltaAngle(Mathf.Round(angle / 45f) * 45f, angle)) > 1f) intermediate++;
+            Assert.That(ShowdownCombat.PlaneDirection(angle).magnitude, Is.EqualTo(1f).Within(.0001f));
+            previous = angle;
+        }
+        foreach (bool direction in visited) Assert.That(direction, Is.True);
+        Assert.That(intermediate, Is.GreaterThan(fps * 35), "Most samples are actual intermediate orientations.");
+    }
+
+    [TestCase(-90f)]
+    [TestCase(-67.3f)]
+    [TestCase(-22.7f)]
+    [TestCase(0f)]
+    [TestCase(46.6f)]
+    [TestCase(90f)]
+    public void ContinuousWindupStaysReadableAndNeverPreparesFromBelow(float angle)
+    {
+        Vector3 announced = ShowdownCombat.UpperReadyDirection(angle);
+        foreach (float phase in new[] { .7f, 3.4f })
+        {
+            Vector3 previous = ShowdownCombat.WindupReadyDirection(angle, phase, 0f);
+            for (int sample = 1; sample <= 120; sample++)
+            {
+                Vector3 direction = ShowdownCombat.WindupReadyDirection(angle, phase, sample / 120f);
+                Assert.That(direction.y, Is.GreaterThanOrEqualTo(0f));
+                Assert.That(direction.z, Is.EqualTo(0f));
+                Assert.That(Vector3.Angle(announced, direction), Is.LessThanOrEqualTo(4.01f));
+                Assert.That(Vector3.Angle(previous, direction), Is.LessThanOrEqualTo(40f / 120f + .01f));
+                previous = direction;
+            }
+            Assert.That(Vector3.Distance(previous, announced), Is.LessThan(.000001f));
+        }
+        Vector3 visible = (ShowdownCombat.UpperReadyDirection(angle + 1.37f) + Vector3.forward * .025f).normalized;
+        Vector3 frozen = ShowdownCombat.CommitUpperReady(visible, announced);
+        Assert.That(Vector3.Distance(frozen, ShowdownCombat.UpperReadyDirection(angle + 1.37f)), Is.LessThan(.000001f),
+            "Commit uses the last visible ready angle rather than snapping to its original centre.");
+        Assert.That(ShowdownCombat.CommitUpperReady(Vector3.down, announced), Is.EqualTo(announced));
+    }
+
     [TestCase(30, 0f)]
     [TestCase(60, .3f)]
     [TestCase(144, -.2f)]

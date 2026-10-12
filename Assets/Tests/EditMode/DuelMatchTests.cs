@@ -19,12 +19,13 @@ public sealed class DuelMatchTests
             Vector3 body = Vector3.forward * (index * 2f);
             Vector3 forward = index == 0 ? Vector3.forward : Vector3.back;
             Quaternion facing = Quaternion.LookRotation(forward);
-            Vector3 blade = facing * (input.GuardHeld ? Quaternion.AngleAxis(angle, Vector3.up) * Vector3.forward
+            float guardedAngle = angle * Mathf.Deg2Rad;
+            Vector3 blade = facing * (input.GuardHeld ? new Vector3(Mathf.Sin(guardedAngle), Mathf.Cos(guardedAngle), 0f)
                 : Quaternion.AngleAxis(-input.ForwardAngle, Vector3.right) * Vector3.forward);
             // State tests deliberately route each blade through its target;
             // the observed directions still follow the supplied input history.
             Vector3 grip = input.GuardHeld ? body + forward * .55f + Vector3.up * .55f - blade * .6f
-                : Vector3.forward * ((1 - index) * 2f) - blade * .9f;
+                : Vector3.forward * ((1 - index) * 2f) - blade * .7f;
             Vector3 oldGrip = poseBaseline[index] && (!input.GuardHeld || previousGuard[index]) ? previousPoses[index].Grip : grip;
             Vector3 oldBlade = poseBaseline[index] && (!input.GuardHeld || previousGuard[index]) ? previousPoses[index].Blade : blade;
             var result = new CombatPose(oldGrip, oldBlade, grip, blade, body, forward, blade - oldBlade, grip, forward);
@@ -116,12 +117,12 @@ public sealed class DuelMatchTests
             Is.EqualTo(CombatOutcome.None));
         Step(new CombatInput(30f, 0f), new CombatInput(30f, 0f), 0f, .4);
         Step(new CombatInput(30f, 0f), new CombatInput(30f, 0f), 0f, .47);
-        Assert.That(Step(new CombatInput(10f, 150f), new CombatInput(10f, 150f), 0f, .48).Outcome, Is.EqualTo(CombatOutcome.Clash));
+        Assert.That(Step(new CombatInput(0f, 150f), new CombatInput(0f, 150f), 0f, .48).Outcome, Is.EqualTo(CombatOutcome.Clash));
     }
 
-    [TestCase(65f, 40f, CombatOutcome.Hit)]
-    [TestCase(65.01f, 40f, CombatOutcome.None)]
-    [TestCase(65f, 39.99f, CombatOutcome.None)]
+    [TestCase(65f, 75f, CombatOutcome.Hit)]
+    [TestCase(65.01f, 75f, CombatOutcome.None)]
+    [TestCase(65f, 74.9f, CombatOutcome.None)]
     public void AttackThresholdsAreInclusive(float angle, float speed, CombatOutcome outcome)
     {
         Assert.That(Step(new CombatInput(angle, speed), Upright, 0f, 0.01).Outcome, Is.EqualTo(outcome));
@@ -132,7 +133,7 @@ public sealed class DuelMatchTests
     {
         Step(new CombatInput(35f, 0f), Upright, 0f, 1d);
         bool hit = false;
-        for (int frame = 1; frame <= 100; frame++)
+        for (int frame = 1; frame <= 150; frame++)
             if (Step(new CombatInput(35f - frame * .2f, 120f), Upright, 0f, 1d + frame * .001d).Outcome == CombatOutcome.Hit)
             { hit = true; break; }
         Assert.That(hit, Is.True, "Small real increments accumulate into a fresh stroke.");
@@ -145,7 +146,7 @@ public sealed class DuelMatchTests
         Assert.That(Step(new CombatInput(44f, 150f), Upright, 0f, 0.02).Outcome, Is.EqualTo(CombatOutcome.None));
         Assert.That(Step(new CombatInput(44f, 150f), Upright, 0f, 0.03).Outcome, Is.EqualTo(CombatOutcome.None));
         Assert.That(Step(new CombatInput(43f, 150f), Upright, 0f, 0.04).Outcome, Is.EqualTo(CombatOutcome.None));
-        Assert.That(Step(new CombatInput(20f, 150f), Upright, 0f, 0.05).Outcome, Is.EqualTo(CombatOutcome.Hit));
+        Assert.That(Step(new CombatInput(18f, 150f), Upright, 0f, 0.05).Outcome, Is.EqualTo(CombatOutcome.Hit));
     }
 
     [Test]
@@ -160,8 +161,9 @@ public sealed class DuelMatchTests
             "The same consumed movement stays consumed after a quick guard tap.");
         Step(new CombatInput(5f, 0f), Upright, 0f, 1.4);
         Step(new CombatInput(5f, 0f), Upright, 0f, 1.47);
-        Assert.That(Step(new CombatInput(25f, 100f), Upright, 0f, 1.48).Outcome, Is.EqualTo(CombatOutcome.Hit),
-            "After a genuine rest, a fresh short cut does not require an eighty-degree stance.");
+        Assert.That(Step(new CombatInput(45f, 100f), Upright, 0f, 1.48).Outcome, Is.EqualTo(CombatOutcome.None), "Preparing the new stance is harmless.");
+        Assert.That(Step(new CombatInput(10f, 100f), Upright, 0f, 1.49).Outcome, Is.EqualTo(CombatOutcome.Hit),
+            "After a real takeback, a short forward cut does not require an eighty-degree stance.");
     }
 
     [Test]

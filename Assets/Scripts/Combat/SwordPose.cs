@@ -110,6 +110,21 @@ namespace SchoolFestival.Combat
 
         public static SwordPose Apply(SwordPose pose, float age)
             => new SwordPose(pose.Position + pose.Direction * Extension(age), pose.Rotation);
+
+        public static SwordPose ApplyCentered(SwordPose input, SwordPose from, SwordPose forward, float age)
+        {
+            if (age < 0f || age >= DurationSeconds) return input;
+            float align = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(age / ChamberSeconds));
+            float returnAt = ChamberSeconds + DriveSeconds + HoldSeconds;
+            float restore = Mathf.SmoothStep(0f, 1f,
+                Mathf.Clamp01((age - returnAt) / (DurationSeconds - returnAt)));
+            Vector3 position = Vector3.Lerp(from.Position, forward.Position, align);
+            Quaternion rotation = Quaternion.Slerp(from.Rotation, forward.Rotation, align);
+            position = Vector3.Lerp(position, input.Position, restore);
+            rotation = Quaternion.Slerp(rotation, input.Rotation, restore);
+            // The offensive drive has no sideways or vertical aiming component.
+            return new SwordPose(position + Vector3.forward * Extension(age), rotation);
+        }
     }
 
     public readonly struct ReactionMotion

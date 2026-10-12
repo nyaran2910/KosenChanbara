@@ -85,7 +85,8 @@ public sealed class CombatContactTests
         var match = new DuelMatch();
         var held = new CombatInput(90f, 0f, true);
         match.Step(new CombatInput(0f, 0f), held, attack, guard, 0d);
-        CombatResult result = match.Step(new CombatInput(0f, 0f, thrustRequested: true), held, attack, guard, .01d);
+        Assert.That(match.Step(new CombatInput(0f, 0f, thrustRequested: true), held, attack, guard, .01d).Outcome, Is.EqualTo(CombatOutcome.None));
+        CombatResult result = match.Step(new CombatInput(0f, 0f), held, attack, guard, .04d);
         Assert.That(result.Outcome, Is.EqualTo(expected));
         Assert.That(result.Kind, Is.EqualTo(AttackKind.Thrust));
         Assert.That(result.SignedPush, Is.EqualTo(touchesBlade ? -DuelMatch.GuardPush : DuelMatch.GuardBreakPush));
@@ -98,7 +99,8 @@ public sealed class CombatContactTests
         var match = new DuelMatch();
         var input = new CombatInput(0f, 0f);
         match.Step(input, input, attack, defender, 0d);
-        CombatResult result = match.Step(new CombatInput(0f, 0f, thrustRequested: true), input, attack, defender, .01d);
+        Assert.That(match.Step(new CombatInput(0f, 0f, thrustRequested: true), input, attack, defender, .01d).Outcome, Is.EqualTo(CombatOutcome.None));
+        CombatResult result = match.Step(new CombatInput(0f, 0f), input, attack, defender, .04d);
         Assert.That(result.Outcome, Is.EqualTo(CombatOutcome.Hit));
         Assert.That(result.Kind, Is.EqualTo(AttackKind.Thrust));
         Assert.That(result.SignedPush, Is.EqualTo(DuelMatch.HitPush));
@@ -206,13 +208,13 @@ public sealed class CombatContactTests
     }
 
     [Test]
-    public void TheSharedStrokeKeepsDecelerationButCancelsGuardReturnExpiryAndInvalidSources()
+    public void TheSharedStrokeMakesSlowDecelerationHarmlessAndCancelsGuardReturnExpiryAndInvalidSources()
     {
         var stroke = new AttackStroke();
         Assert.That(stroke.Update(new CombatInput(90f, 0f), 0d), Is.False);
         Assert.That(stroke.Update(new CombatInput(45f, 80f), .01d), Is.True);
         Assert.That(stroke.Kind, Is.EqualTo(AttackKind.Cut));
-        Assert.That(stroke.Update(new CombatInput(20f, 5f), .1d), Is.True);
+        Assert.That(stroke.Update(new CombatInput(20f, 5f), .1d), Is.False);
         Assert.That(stroke.Update(new CombatInput(21f, 5f), .11d), Is.False);
         stroke.Update(new CombatInput(90f, 0f), .2d);
         stroke.Update(new CombatInput(45f, 80f), .21d);
@@ -222,9 +224,57 @@ public sealed class CombatContactTests
         Assert.That(stroke.Update(new CombatInput(20f, 5f, true), 1.22d), Is.False);
         Assert.That(stroke.Update(new CombatInput(10f, 5f), 1.23d), Is.False);
         Assert.That(stroke.Update(new CombatInput(0f, 0f, valid: false, thrustRequested: true), 1.3d), Is.False);
-        Assert.That(stroke.Update(new CombatInput(0f, 0f, poseGeneration: 2, thrustRequested: true), 1.4d), Is.True);
+        Assert.That(stroke.Update(new CombatInput(0f, 0f, poseGeneration: 2, thrustRequested: true), 1.4d), Is.False);
         Assert.That(stroke.Kind, Is.EqualTo(AttackKind.Thrust), "A new controller's explicit fresh impulse is usable without reusing its old cut.");
         stroke.Reset();
         Assert.That(stroke.Update(new CombatInput(25.01f, 0f, thrustRequested: true), 2d), Is.False);
     }
+    [Test]
+    public void ARealBodyOverlapOnTheOutwardTakebackIsNotAnAttack()
+    {
+        Vector3 grip=new Vector3(0f,.15f,.55f),body=Vector3.forward*2.2f;
+        Vector3 raised=new Vector3(0f,1f,1f).normalized;
+        var returning=new CombatPose(grip,Vector3.forward,grip,raised,Vector3.zero,Vector3.forward,
+            Vector3.up,grip,raised);
+        var defence=new CombatPose(body,Vector3.up,body,Vector3.up,body,Vector3.back,Vector3.zero,body,Vector3.up);
+        Assert.That(CombatContact.TrySweptBladeTouchesBody(returning.PreviousGrip,returning.PreviousBlade,
+            returning.Grip,returning.Blade,body,out _),Is.True);
+        Assert.That(CombatContact.Resolve(AttackKind.Cut,returning,defence,false).Outcome,Is.EqualTo(CombatOutcome.None));
+    }
+
+    [Test]
+    public void ACoarseAcrossFrontCutCanOnlyHitDuringItsIncomingHalfAndKeepsOriginalFrameTime()
+    {
+        Vector3 grip=Vector3.forward*.6f;
+        Vector3 previous=Quaternion.Euler(0f,-75f,0f)*Vector3.forward,current=Quaternion.Euler(0f,75f,0f)*Vector3.forward;
+        var attack=new CombatPose(grip,previous,grip,current,Vector3.zero,Vector3.forward,Vector3.right,grip,current);
+        Vector3 body=Vector3.forward*2.2f;
+        var defender=new CombatPose(body,Vector3.up,body,Vector3.up,body,Vector3.back,Vector3.zero,body,Vector3.up);
+        CombatContactResult hit=CombatContact.Resolve(AttackKind.Cut,attack,defender,false);
+        Assert.That(hit.Outcome,Is.EqualTo(CombatOutcome.Hit));
+        Assert.That(hit.Fraction,Is.GreaterThan(0f).And.LessThanOrEqualTo(.5001f));
+        body=new Vector3(1.7f,0f,1.6f);
+        defender=new CombatPose(body,Vector3.up,body,Vector3.up,body,Vector3.back,Vector3.zero,body,Vector3.up);
+        Assert.That(CombatContact.TrySweptBladeTouchesBody(grip,previous,grip,current,body,out _),Is.True);
+        Assert.That(CombatContact.Resolve(AttackKind.Cut,attack,defender,false).Outcome,Is.EqualTo(CombatOutcome.None),
+            "An observed collision only on the outward half is harmless.");
+    }
+
+    [Test]
+    public void ACoarseThrustAlignmentOnlyContactsAfterItsBladeEntersTheForwardCone()
+    {
+        Vector3 previous=Quaternion.Euler(0f,18f,0f)*Vector3.forward;
+        var attack=new CombatPose(new Vector3(0f,.15f,.55f),previous,new Vector3(0f,.15f,.75f),Vector3.forward,
+            Vector3.zero,Vector3.forward,Vector3.forward,Vector3.zero,Vector3.forward);
+        Vector3 body=Vector3.forward*2.2f;
+        var defender=new CombatPose(body,Vector3.up,body,Vector3.up,body,Vector3.back,Vector3.zero,body,Vector3.up);
+        Assert.That(CombatContact.TrySweptBladeTouchesBody(attack.PreviousGrip,attack.PreviousBlade,attack.Grip,attack.Blade,body,out float oldHit),Is.True);
+        Assert.That(oldHit,Is.Zero,"The old whole-frame sweep would hit while still aiming sideways.");
+        CombatContactResult hit=CombatContact.Resolve(AttackKind.Thrust,attack,defender,false);
+        Assert.That(hit.Outcome,Is.EqualTo(CombatOutcome.Hit));
+        Assert.That(hit.Fraction,Is.GreaterThan(.8f).And.LessThanOrEqualTo(1f));
+        Vector3 atHit=Vector3.Slerp(attack.PreviousBlade,attack.Blade,hit.Fraction);
+        Assert.That(Vector3.Angle(atHit,attack.Forward),Is.LessThanOrEqualTo(1.001f));
+    }
+
 }

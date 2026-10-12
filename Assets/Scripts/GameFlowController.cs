@@ -565,7 +565,7 @@ public sealed class GameFlowController : MonoBehaviour
         BackButton(panel,"やり直す",RestartFromPause,160);
     }
 
-    private void OpenAxisCalibration()
+    public void OpenAxisCalibration()
     {
         if (!pauseOpen || axisCalibration == null || Time.unscaledTime < inputAfter) return;
         pauseCanvas.SetActive(false);

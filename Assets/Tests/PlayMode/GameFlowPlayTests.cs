@@ -262,7 +262,7 @@ public sealed class GameFlowPlayTests
     }
 
     [UnityTest]
-    public IEnumerator PauseContainsOnlyBasicActionsAndDisplayChoicesWithNonInteractiveQrCards()
+    public IEnumerator PauseContainsBasicActionsAxesAndDisplayChoicesWithNonInteractiveQrCards()
     {
         foreach(int mode in new[]{0,1,2})
         {
@@ -291,7 +291,7 @@ public sealed class GameFlowPlayTests
         object calibration=Field<object>(flow,"axisCalibration");
         Call(calibration,"Update");
         Button entry=(Button)calibration.GetType().GetProperty("EntryButton").GetValue(calibration);
-        Assert.That(entry.gameObject.activeInHierarchy,Is.False,"The gameplay pause has exactly three actions plus display options.");
+        Assert.That(entry.gameObject.activeInHierarchy,Is.True,"The gameplay pause also exposes the requested axis calibration entry.");
         Call(flow,"TogglePause");
         yield return null;
 

@@ -627,7 +627,7 @@ public sealed class ShowdownCoursePlayTests
     }
 
     [UnityTest]
-    public IEnumerator ShortCutAndItsReversalDamageWithoutReturningToAnEightyDegreeStance()
+    public IEnumerator ShortCutsNeedRealPreparationAndDoNotDamageDuringTakeback()
     {
         Call(master, "SpawnSingleNpc");
         object npc = Field<IList>(master, "singleNpcs")[0];
@@ -655,13 +655,19 @@ public sealed class ShowdownCoursePlayTests
         Cut(5f, 0f);
         SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + .1d);
         Cut(35f, 90f);
+        Assert.That(RuntimeField(npc, "Hearts"), Is.EqualTo(2), "Returning to the preparation cannot score another hit.");
+        SetRuntimeField(npc, "GuardOctant", 0);
+        Call(master, "UpdateNpcGuard", npc, 0f);
+        PublishNpcGuardHistory(npc);
+        SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + .1d);
+        Cut(10f, 90f);
         Assert.That(RuntimeField(npc, "Hearts"), Is.EqualTo(1),
-            "A reversed upward cut is a fresh attack; the staggered enemy's parallel vertical guard must not make it immune.");
+            "A newly prepared short cut is valid; the staggered enemy's parallel vertical guard does not make it immune.");
         yield return null;
     }
 
     [UnityTest]
-    public IEnumerator ACommittedStrikeMayDecelerateButSlowStartsStaticBladesAndExpiredCutsCannotHit()
+    public IEnumerator SlowingBelowTheThresholdStaticBladesAndExpiredCutsCannotHit()
     {
         Call(master, "SpawnSingleNpc");
         object enemy = Field<IList>(master, "singleNpcs")[0];
@@ -681,14 +687,16 @@ public sealed class ShowdownCoursePlayTests
         }
         Stroke(80f, 0f); Stroke(45f, 8f); Stroke(5f, 8f);
         Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(3), "A slow movement cannot begin a strike.");
-        Stroke(80f, 60f); Stroke(45f, 60f); Stroke(5f, 8f);
-        Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(2), "A cut committed at the required speed remains valid while slowing toward the body.");
+        Stroke(80f, 120f); Stroke(45f, 120f); Stroke(5f, 8f);
+        Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(3), "A recognized cut becomes harmless as it slows below the required speed.");
+        Stroke(80f, 120f); Stroke(45f, 120f); Stroke(5f, 120f);
+        Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(2), "A fast prepared cut still damages.");
         SetRuntimeField(master, "matchTime", (double)RuntimeField(enemy, "RecoveryUntil") + .01d);
         SetRuntimeField(enemy, "StunnedUntil", 100d);
         // Begin the next real stroke out of reach: raising the sword is a
         // valid upward cut, not an inert eighty-degree rearm any more.
         root.position = Player.position + Player.forward * 10f;
-        Stroke(80f, 60f); Stroke(45f, 60f);
+        Stroke(80f, 120f); Stroke(45f, 120f);
         Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(2));
         root.position = Player.position + Player.forward * 1.2f + Vector3.up * .5f;
         Stroke(45f, 0f);
@@ -1115,7 +1123,7 @@ public sealed class ShowdownCoursePlayTests
     }
 
     [UnityTest]
-    public IEnumerator SurvivingEnemyChangesGuardDirectionAfterEveryReceivedHit()
+    public IEnumerator SurvivingEnemySmoothlyChangesItsContinuousGuardAfterEveryReceivedHit()
     {
         Call(master, "SpawnSingleNpc");
         object enemy = Field<IList>(master, "singleNpcs")[0];
@@ -1124,7 +1132,8 @@ public sealed class ShowdownCoursePlayTests
         root.position = Player.position + Player.forward * 2f;
         root.rotation = Quaternion.LookRotation(-Player.forward);
         SetRuntimeField(enemy, "Hearts", 3);
-        int initialOctant = (int)RuntimeField(enemy, "GuardOctant");
+        Assert.That(RuntimeField(enemy, "GuardOctant"), Is.EqualTo(-1));
+        float initialBias = (float)RuntimeField(enemy, "GuardBiasTarget");
         Transform sword = (Transform)RuntimeField(Field<object>(master, "first"), "Sword");
         for (int hit = 1; hit <= 2; hit++)
         {
@@ -1143,12 +1152,17 @@ public sealed class ShowdownCoursePlayTests
                 UpdateSingleAttackWithManualSword(new CombatInput(angle, 90f, false, true, 44));
             }
             Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(3 - hit));
-            Assert.That(RuntimeField(enemy, "GuardOctant"), Is.EqualTo((initialOctant + hit * 2) % 8));
+            Assert.That(RuntimeField(enemy, "GuardOctant"), Is.EqualTo(-1));
+            Assert.That(RuntimeField(enemy, "GuardBiasTarget"), Is.EqualTo(initialBias + hit * 90f));
             SetRuntimeField(master, "singleActiveNpc", enemy);
-            Call(master, "UpdateNpcGuard", enemy, 0f);
+            float previousBias = (float)RuntimeField(enemy, "GuardBias");
+            SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + .01d);
+            Call(master, "UpdateNpcGuard", enemy, .01f);
+            Assert.That((float)RuntimeField(enemy, "GuardBias") - previousBias, Is.InRange(.29f, .31f),
+                "A hit changes the guard's destination gradually, not through an octant snap.");
             Transform blade = (Transform)RuntimeField(enemy, "Sword");
-            Vector3 expected = root.TransformDirection(ShowdownCombat.ReadyDirection((int)RuntimeField(enemy, "GuardOctant")));
-            Assert.That(Vector3.Angle(blade.forward, expected), Is.LessThan(.01f), "The displayed guard changes with its state.");
+            CombatPose pose = (CombatPose)Call(master, "NpcCombatPose", enemy);
+            Assert.That(Vector3.Angle(blade.forward, pose.Blade), Is.LessThan(.01f), "The continuously moving visible guard and contact agree.");
         }
         yield return null;
     }

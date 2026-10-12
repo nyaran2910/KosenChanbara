@@ -53,7 +53,7 @@ namespace SchoolFestival.Combat
     public sealed class DuelMatch
     {
         public const float AttackAngle = 45f;
-        public const float MinimumSpeed = 40f;
+        public const float MinimumSpeed = AttackStroke.MinimumCutSpeed;
         public const float RearmAngle = 80f;
         public const float HitPush = 3f;
         public const float GuardPush = 2f;
