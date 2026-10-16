@@ -1,6 +1,7 @@
 using System.Linq;
 using System.Reflection;
 using NUnit.Framework;
+using SchoolFestival.Combat;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -63,12 +64,12 @@ public sealed class BattleGroundSceneTests
             foreach (string field in new[] { "characterBodies", "characterBlades" })
             {
                 SerializedProperty choices = serialized.FindProperty(field);
-                Assert.That(choices.arraySize, Is.EqualTo(field == "characterBodies" ? 24 : 6), field);
+                Assert.That(choices.arraySize, Is.EqualTo(field == "characterBodies" ? 30 : 6), field);
                 for (int i = 0; i < choices.arraySize; i++)
                     Assert.That(choices.GetArrayElementAtIndex(i).objectReferenceValue, Is.Not.Null, field + " " + i);
             }
-            Assert.That(serialized.FindProperty("characterNames").arraySize, Is.EqualTo(4));
-            Assert.That(serialized.FindProperty("characterChestCenters").arraySize, Is.EqualTo(4));
+            Assert.That(serialized.FindProperty("characterNames").arraySize, Is.EqualTo(5));
+            Assert.That(serialized.FindProperty("characterChestCenters").arraySize, Is.EqualTo(5));
             Assert.That(serialized.FindProperty("colosseumStage").objectReferenceValue, Is.Not.Null);
             Assert.That(serialized.FindProperty("cricketStadiumStage").objectReferenceValue, Is.Not.Null);
             Assert.That(serialized.FindProperty("cricketBoundaryRadius").floatValue, Is.GreaterThan(15f));
@@ -128,6 +129,59 @@ public sealed class BattleGroundSceneTests
         Vector3[] points = mesh.vertices.Select(renderer.transform.TransformPoint).ToArray();
         if (baked) Object.DestroyImmediate(mesh);
         return points;
+    }
+
+    [Test]
+    public void ChurromanAndChurrosUseTheCommonCombatAnchorsAndNoMeshColliders()
+    {
+        SceneSetup[] previousSetup = EditorSceneManager.GetSceneManagerSetup();
+        try
+        {
+            var scene = EditorSceneManager.OpenScene("Assets/Scenes/BattleGround.unity");
+            MonoBehaviour master = Object.FindObjectsByType<MonoBehaviour>(FindObjectsSortMode.None)
+                .Single(component => component.GetType().Name == "MasterController" && component.gameObject.scene == scene);
+            var serialized = new SerializedObject(master);
+            Assert.That(serialized.FindProperty("characterNames").GetArrayElementAtIndex(4).stringValue, Is.EqualTo("チュロスメン"));
+            var centers = serialized.FindProperty("characterChestCenters");
+            Assert.That(centers.GetArrayElementAtIndex(4).vector3Value, Is.EqualTo(centers.GetArrayElementAtIndex(0).vector3Value));
+            var bodies = serialized.FindProperty("characterBodies");
+            for (int color = 0; color < 6; color++)
+            {
+                var body = (GameObject)bodies.GetArrayElementAtIndex(24 + color).objectReferenceValue;
+                Assert.That(body, Is.Not.Null);
+                Assert.That(body.GetComponentsInChildren<Collider>(), Is.Empty);
+                foreach (string bone in new[] { "chest", "head", "hip", "foot_l1", "foot_l2", "ankle_l", "foot_r1", "foot_r2", "ankle_r" })
+                    Assert.That(body.GetComponentsInChildren<Transform>().Any(child => child.name == bone), Is.True, bone);
+                Assert.That(body.GetComponentsInChildren<SkinnedMeshRenderer>(), Is.Not.Empty);
+            }
+            var blade = (GameObject)serialized.FindProperty("churrosBlade").objectReferenceValue;
+            Assert.That(blade, Is.Not.Null);
+            Assert.That(blade.GetComponentsInChildren<Collider>(), Is.Empty);
+            Assert.That(serialized.FindProperty("churrosWeaponChance").floatValue, Is.EqualTo(.05f));
+            Assert.That(CombatContact.BladeLength, Is.EqualTo(2.1f));
+            var instance = UnityEngine.Object.Instantiate(blade);
+            try
+            {
+                float tip = instance.GetComponentsInChildren<Renderer>().SelectMany(WorldPoints)
+                    .Select(point => instance.transform.InverseTransformPoint(point).z).Max();
+                Assert.That(tip, Is.EqualTo(CombatContact.BladeLength).Within(.03f), "The visible churros tip uses the same grip-to-tip length.");
+                Renderer crust = instance.GetComponentsInChildren<Renderer>().First(renderer => renderer.name.Contains("Churro_body"));
+                Vector3[] points = WorldPoints(crust).Select(point => instance.transform.InverseTransformPoint(point)).ToArray();
+                float bottom = points.Min(point => point.z), top = points.Max(point => point.z);
+                Assert.That(bottom, Is.LessThan(-.125f), "The authored grip must leave room below the hand anchor.");
+                foreach (Vector3[] end in new[] { points.Where(point => point.z < bottom + .08f).ToArray(),
+                    points.Where(point => point.z > top - .08f).ToArray() })
+                    Assert.That(new Vector2(end.Average(point => point.x), end.Average(point => point.y)).magnitude,
+                        Is.LessThan(.05f), "The authored pose must not leave the weapon leaning away from the logical blade axis.");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(instance); }
+        }
+        finally
+        {
+            if (previousSetup.Any(setup => setup.isLoaded && setup.isActive))
+                EditorSceneManager.RestoreSceneManagerSetup(previousSetup);
+            else EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+        }
     }
 
     [Test]

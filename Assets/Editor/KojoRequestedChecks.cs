@@ -14,6 +14,14 @@ public static class KojoRequestedChecks
         runner = ScriptableObject.CreateInstance<TestRunnerApi>();
         runner.RegisterCallbacks(new Results());
     }
+    [MenuItem("Tools/Kojo Checks/Run Controller Edit")]
+    public static void RunControllerEdit() => Run(TestMode.EditMode, null, "controller-edit");
+    [MenuItem("Tools/Kojo Checks/Run Controller Play")]
+    public static void RunControllerPlay()
+    {
+        Environment.SetEnvironmentVariable("SF_CONTROLLER_PREVIEW_DIR", "/tmp/sf-controller-preview");
+        Run(TestMode.PlayMode, "ControllerRegistrationPlayTests,ControllerAxisCalibrationPlayTests,GameFlowPlayTests,MotionSourceSwitchPlayTests,CombatCameraAndCalibrationPlayTests", "controller-play");
+    }
     [MenuItem("Tools/Kojo Checks/Run Preview Play")]
     public static void RunPlay()
     {
@@ -26,6 +34,15 @@ public static class KojoRequestedChecks
         Environment.SetEnvironmentVariable("CHAMBARA_PREVIEW_DIR", "/tmp/kojo-field-preview");
         Run(TestMode.PlayMode, null, "preview-all-play");
     }
+    [MenuItem("Tools/Kojo Checks/Run Scoreboard Play")]
+    public static void RunScoreboardPlay()
+    {
+        Environment.SetEnvironmentVariable("SF_SCORE_PREVIEW_DIR", "/tmp/sf-score-preview");
+        Run(TestMode.PlayMode, "ScoreboardPlayTests,ScoreboardDiscoveryPlayTests,GameFlowPlayTests,DuelPresentationResultPlayTests,SingleDefeatPlayTests,ShowdownRoundShortcutPlayTests", "scoreboard-play");
+    }
+    [MenuItem("Tools/Kojo Checks/Run Scoreboard Discovery")]
+    public static void RunScoreboardDiscovery()
+        => Run(TestMode.PlayMode, "ScoreboardPlayTests,ScoreboardDiscoveryPlayTests,DuelPresentationResultPlayTests,SingleDefeatPlayTests,ShowdownRoundShortcutPlayTests", "scoreboard-discovery");
     [MenuItem("Tools/Kojo Checks/Capture Preview")]
     public static void Capture()
     {
@@ -61,6 +78,8 @@ public static class KojoRequestedChecks
             TestRunnerApi.SaveResultToFile(result, "/tmp/kojo-" + tag + ".xml");
             File.WriteAllText("/tmp/kojo-preview-check-state", tag + " " + result.ResultState + " passed=" + result.PassCount + " failed=" + result.FailCount);
             Environment.SetEnvironmentVariable("CHAMBARA_PREVIEW_DIR", null);
+            Environment.SetEnvironmentVariable("SF_CONTROLLER_PREVIEW_DIR", null);
+            Environment.SetEnvironmentVariable("SF_SCORE_PREVIEW_DIR", null);
         }
         public void TestStarted(ITestAdaptor test) { }
         public void TestFinished(ITestResultAdaptor result) { }

@@ -91,12 +91,17 @@ namespace SchoolFestival.Combat
             return new Vector3(Mathf.Sin(radians), Mathf.Cos(radians), 0f);
         }
 
-        public static float GuardAngleDegrees(float initialAngle, float phase, double elapsed, int maximumHearts)
+        // Choose a different continuous lane in the upper half-plane. The
+        // windup still travels from the currently visible sword to this lane.
+        public static float AlternativeReadyAngle(float previous, float sample)
         {
-            float age = Mathf.Max(0f, (float)elapsed);
-            float speed = Mathf.Lerp(20f, 36f, (Mathf.Clamp(maximumHearts, 1, 3) - 1) * .5f);
-            return Mathf.Repeat(initialAngle + speed * age
-                + 12f * (Mathf.Sin(age * .7f + phase) - Mathf.Sin(phase)), 360f);
+            previous = Mathf.Clamp(previous, -90f, 90f);
+            float leftEnd = Mathf.Max(-90f, previous - 35f);
+            float rightStart = Mathf.Min(90f, previous + 35f);
+            float leftWidth = leftEnd + 90f;
+            float along = Mathf.Clamp01(sample) * (leftWidth + 90f - rightStart);
+            return leftWidth > 0f && (along <= leftWidth || rightStart >= 90f)
+                ? -90f + along : rightStart + along - leftWidth;
         }
 
         public static Vector3 UpperReadyDirection(float degrees)
@@ -112,13 +117,6 @@ namespace SchoolFestival.Combat
             float envelope = Mathf.Sin(t * Mathf.PI);
             float variation = 4f * envelope * envelope * Mathf.Sin(t * Mathf.PI * 2f + phase);
             return UpperReadyDirection(degrees + variation);
-        }
-
-        public static Vector3 CommitUpperReady(Vector3 visibleDirection, Vector3 announcedDirection)
-        {
-            Vector3 projected = new Vector3(visibleDirection.x, Mathf.Max(0f, visibleDirection.y), 0f);
-            return visibleDirection.y >= -.00001f && projected.sqrMagnitude > .0001f
-                ? projected.normalized : announcedDirection;
         }
 
         public static float OpponentHandoff(ShowdownDifficulty difficulty)
@@ -163,11 +161,15 @@ namespace SchoolFestival.Combat
         }
 
         public static Vector3 WaitingTarget(Vector3 anchor, float phase, double now)
+            => WaitingTarget(anchor, phase, now, .85f, .68f, WaitingWanderRadius);
+
+        public static Vector3 WaitingTarget(Vector3 anchor, float phase, double now,
+            float frequencyX, float frequencyZ, float radius)
         {
             float time = (float)now;
-            Vector3 offset = new Vector3(Mathf.Sin(time * .85f + phase), 0f,
-                Mathf.Sin(time * .68f + phase * 1.7f)) * WaitingWanderRadius;
-            return anchor + Vector3.ClampMagnitude(offset, WaitingWanderRadius);
+            Vector3 offset = new Vector3(Mathf.Sin(time * frequencyX + phase), 0f,
+                Mathf.Sin(time * frequencyZ + phase * 1.7f)) * radius;
+            return anchor + Vector3.ClampMagnitude(offset, radius);
         }
 
         public static Vector3 CutAim(Vector3 target, SwordPoseSettings settings)

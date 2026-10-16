@@ -80,3 +80,6 @@ crashlytics-build.properties
 
 # macOS folder metadata
 .DS_Store
+
+# Native crash reports are local diagnostics.
+/mono_crash.*

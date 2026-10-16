@@ -58,6 +58,49 @@ public sealed class CombatCameraAndCalibrationPlayTests
         yield return null;
     }
 
+    [UnityTest]
+    public IEnumerator FocusFollowsItsOwnRepeatedRecoilTranslationAndTargetSwitchStaysSmooth()
+    {
+        var player = new GameObject("Unequal recoil camera player");
+        var enemy = new GameObject("Unequal recoil focus");
+        var next = new GameObject("Next camera focus");
+        var cameraObject = new GameObject("Unequal recoil camera", typeof(Camera));
+        cameraObject.transform.SetParent(player.transform, false);
+        enemy.transform.position = new Vector3(0f, 0f, 3f);
+        next.transform.position = new Vector3(5f, 0f, 1f);
+        object view = Activator.CreateInstance(RuntimeType("DuelView"), player.transform, enemy.transform, new Renderer[0]);
+        try
+        {
+            Call(view, "SetFocusTarget", enemy.transform);
+            Call(view, "Tick", 0d);
+            Vector3 previousCameraOffset = cameraObject.transform.position - player.transform.position;
+            for (int frame = 1; frame <= 12; frame++)
+            {
+                Vector3 playerDelta = new Vector3(.12f, 0f, .3f);
+                Vector3 enemyDelta = new Vector3(.18f, 0f, .3f);
+                player.transform.position += playerDelta;
+                enemy.transform.position += enemyDelta;
+                Call(view, "Tick", frame / 60d);
+                Assert.That(Vector3.Distance(Field<Vector3>(view, "focusPosition"), enemy.transform.position + Vector3.up), Is.LessThan(.001f),
+                    "The focus must follow the opponent's lateral recoil delta instead of inheriting the player's smaller shift.");
+                Assert.That(Vector3.Distance(cameraObject.transform.position - player.transform.position, previousCameraOffset), Is.LessThan(.003f),
+                    "The camera orbit must continue to follow the player independently.");
+                previousCameraOffset = cameraObject.transform.position - player.transform.position;
+            }
+            Quaternion beforeSwitch = cameraObject.transform.rotation;
+            Call(view, "SetFocusTarget", next.transform);
+            player.transform.position += Vector3.right * .1f;
+            Call(view, "Tick", 13d / 60d);
+            Assert.That(Quaternion.Angle(beforeSwitch, cameraObject.transform.rotation), Is.LessThan(12f),
+                "Changing focus targets must keep the existing smooth handoff.");
+            for (int frame = 14; frame <= 180; frame++) Call(view, "Tick", frame / 60d);
+            Quaternion expected = Quaternion.LookRotation(next.transform.position + Vector3.up - cameraObject.transform.position);
+            Assert.That(Quaternion.Angle(expected, cameraObject.transform.rotation), Is.LessThan(.2f));
+        }
+        finally { Call(view, "Dispose"); Object.Destroy(player); Object.Destroy(enemy); Object.Destroy(next); }
+        yield return null;
+    }
+
     private static void DisableTransport(Scene scene, LoadSceneMode mode)
     {
         foreach (MonoBehaviour component in Object.FindObjectsByType<MonoBehaviour>(FindObjectsSortMode.None))
@@ -78,9 +121,8 @@ public sealed class CombatCameraAndCalibrationPlayTests
         Call(flow, "ChooseMode", false); Call(flow, "Ready", 0); Call(flow, "Ready", 1); Call(flow, "BeginMatch");
         Call(flow, "TogglePause");
         Set(flow, "inputAfter", -100f);
-        object panel = Field<object>(flow, "axisCalibration");
-        Call(panel, "Update");
-        Button entry = (Button)panel.GetType().GetProperty("EntryButton").GetValue(panel);
+        object panel = Field<object>(flow, "registration");
+        Button entry = Field<GameObject>(flow, "pauseCanvas").GetComponentsInChildren<Button>().Single(b => b.name == "コントローラ");
         Assert.That(entry.isActiveAndEnabled, Is.True, "The playing Esc menu exposes axis calibration.");
         double before = Field<double>(master, "matchTime");
         Vector3 position = Field<GameObject>(master, "PlayerObject1").transform.position;

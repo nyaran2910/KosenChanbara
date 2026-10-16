@@ -1,12 +1,16 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 /// <summary>Native desktop serial transport, without a System.IO.Ports package dependency.</summary>
 internal sealed class HardwareSerialPort : IDisposable
 {
-#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+// In the Editor, the build target can be Windows while the host is macOS.
+// Only a Windows host or a standalone Windows player may call kernel32.
+#if UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR)
     // fBinary, DTR_CONTROL_ENABLE (bits 4-5), RTS_CONTROL_ENABLE (bits 12-13).
     // Arduino ESP's USBCDC implementation needs DTR and RTS to report connected.
     // https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-dcb
@@ -25,17 +29,45 @@ internal sealed class HardwareSerialPort : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetCommState(IntPtr handle, ref Dcb dcb);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetCommTimeouts(IntPtr handle, ref Timeouts timeouts);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool ReadFile(IntPtr handle, byte[] bytes, uint count, out uint read, IntPtr overlapped);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool WriteFile(IntPtr handle, byte[] bytes, uint count, out uint written, IntPtr overlapped);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", EntryPoint = "QueryDosDeviceW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint QueryDosDevice(string deviceName, [Out] char[] target, uint capacity);
+
+    internal static string[] FindWindowsPorts()
+    {
+        // Enumerate the native device names without the Registry assembly,
+        // which is not included in Unity's .NET Standard player profile.
+        for (int capacity = 32768; capacity <= 1048576; capacity *= 2)
+        {
+            char[] buffer = new char[capacity];
+            uint length = QueryDosDevice(null, buffer, (uint)buffer.Length);
+            if (length == 0)
+            {
+                if (Marshal.GetLastWin32Error() == 122) continue; // ERROR_INSUFFICIENT_BUFFER
+                throw new IOException("Could not enumerate serial ports (error " + Marshal.GetLastWin32Error() + ")");
+            }
+            var ports = new List<string>();
+            foreach (string name in new string(buffer, 0, (int)length).Split('\0'))
+                if (name.StartsWith("COM", StringComparison.OrdinalIgnoreCase)
+                    && uint.TryParse(name.Substring(3), out uint number) && number > 0)
+                    ports.Add(name);
+            ports.Sort(StringComparer.Ordinal);
+            return ports.ToArray();
+        }
+        throw new IOException("Serial device list exceeds the supported buffer size");
+    }
 #else
     private int descriptor = -1;
     [DllImport("libc", SetLastError = true)] private static extern int open(string path, int flags);
     [DllImport("libc", SetLastError = true)] private static extern IntPtr read(int descriptor, byte[] buffer, UIntPtr size);
+    [DllImport("libc", SetLastError = true)] private static extern IntPtr write(int descriptor, byte[] buffer, UIntPtr size);
     [DllImport("libc")] private static extern int close(int descriptor);
 #endif
 
     public HardwareSerialPort(string path)
     {
-#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+#if UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR)
         handle = CreateFile("\\\\.\\" + path, 0x80000000u | 0x40000000u, 0, IntPtr.Zero, 3, 0, IntPtr.Zero);
         if (handle == new IntPtr(-1)) throw new IOException("Could not open " + path);
         Dcb dcb = new Dcb { Length = (uint)Marshal.SizeOf(typeof(Dcb)) };
@@ -71,7 +103,7 @@ internal sealed class HardwareSerialPort : IDisposable
 
     public int Read(byte[] bytes)
     {
-#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+#if UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR)
         if (!ReadFile(handle, bytes, (uint)bytes.Length, out uint count, IntPtr.Zero)) throw new IOException("Serial read failed");
         return (int)count;
 #else
@@ -83,9 +115,45 @@ internal sealed class HardwareSerialPort : IDisposable
 #endif
     }
 
+    public void Write(byte[] bytes)
+    {
+        if (bytes == null || bytes.Length == 0) return;
+#if UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR)
+        if (handle == new IntPtr(-1) ||
+            !WriteFile(handle, bytes, (uint)bytes.Length, out uint written, IntPtr.Zero) || written != bytes.Length)
+            throw new IOException("Serial write failed (error " + Marshal.GetLastWin32Error() + ")");
+#else
+        if (descriptor < 0) throw new IOException("Serial port is closed");
+        int offset = 0;
+        int retries = 0;
+        while (offset < bytes.Length)
+        {
+            long count = write(descriptor, Slice(bytes, offset), new UIntPtr((uint)(bytes.Length - offset))).ToInt64();
+            if (count > 0) { offset += (int)count; retries = 0; continue; }
+            int error = Marshal.GetLastWin32Error();
+            if (count < 0 && (error == 11 || error == 35 || error == 4) && retries++ < 50)
+            {
+                Thread.Sleep(1);
+                continue;
+            }
+            throw new IOException("Serial write failed (errno " + error + ")");
+        }
+#endif
+    }
+
+#if !(UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR))
+    private static byte[] Slice(byte[] bytes, int offset)
+    {
+        if (offset == 0) return bytes;
+        byte[] remaining = new byte[bytes.Length - offset];
+        Buffer.BlockCopy(bytes, offset, remaining, 0, remaining.Length);
+        return remaining;
+    }
+#endif
+
     public void Dispose()
     {
-#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+#if UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR)
         if (handle != new IntPtr(-1)) { CloseHandle(handle); handle = new IntPtr(-1); }
 #else
         if (descriptor >= 0) { close(descriptor); descriptor = -1; }

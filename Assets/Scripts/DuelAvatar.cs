@@ -21,7 +21,6 @@ public sealed class DuelAvatar
     private Quaternion defeatSwordRotation;
     private Vector3[] defeatVertices;
     private float defeatFloor;
-    private static Mesh gloveMesh;
     private float stepOffset, stepFrom, stepTo, stepElapsed, stepLift;
     private bool stepping, stepArmed, hasMotionBaseline, suppressStepEffects;
     private readonly AttackStroke feedbackStroke = new AttackStroke();
@@ -30,13 +29,13 @@ public sealed class DuelAvatar
     private bool recoveringFeet, suppressRecoveryEffects;
     private int recoveryLandings, landingLeg;
     private Vector3 renderedOrigin, previousOrigin, gaitVelocity;
+    private Vector3 previousPlayerRoot;
     private int movingLeg = -1, nextLeg;
-    private float previousStepOffset;
+    private float previousStepOffset, gaitDistance;
     private bool groundInitialized;
-    private double staggerStart = -100, thrustStart = -100, guardRecoilStart = -100;
-    private float staggerSeconds, thrustSeconds;
-    private bool thrustSoundPending;
-    private Vector3 staggerDirection, thrustDirection, headTopOffset;
+    private double staggerStart = -100, guardRecoilStart = -100;
+    private float staggerSeconds;
+    private Vector3 staggerDirection, headTopOffset;
     private SwordPose reactionSword;
     private Vector3 reactionSwordChest;
     private bool reactionGuard;
@@ -69,10 +68,10 @@ public sealed class DuelAvatar
     {
         public Transform Upper, Lower, Ankle;
         public Vector3 Plant, KneePole;
-        // Plant is the rest stance; contact anchors never inherit player movement.
+        // Plant is the rest stance; WorldPlant is the current ground contact.
         public Vector3 WorldPlant, StepStart, StepTarget;
-        public Quaternion WorldRotation, StepRotation;
-        public float Elapsed, Duration;
+        public Quaternion WorldRotation, StepStartRotation, StepRotation;
+        public float Elapsed, Duration, Lift;
         public bool Moving;
         public Quaternion FootRotation;
         public float UpperLength, LowerLength;
@@ -94,7 +93,6 @@ public sealed class DuelAvatar
         initialVisualPosition = visual.localPosition;
         initialVisualRotation = visual.localRotation;
         initialVisualScale = visual.localScale;
-        AttachGripGlove(visual, sword);
         var found = new Dictionary<string, Transform>();
         foreach (Transform t in visual.GetComponentsInChildren<Transform>()) found[t.name] = t;
         found.TryGetValue("chest", out chest);
@@ -200,7 +198,7 @@ public sealed class DuelAvatar
             recoveryDirection = player.forward * (Vector3.Dot(staggerDirection, player.up) < 0f ? 1f : -1f);
         recoveryDirection.Normalize();
         recoveringFeet = true; recoveryLandings = 0; suppressRecoveryEffects = false;
-        recoil = 0f; thrustStart = -100; thrustSoundPending = false;
+        recoil = 0f;
         stepping = false; stepLift = 0f;
         ClearMotionHistory();
         suppressRecoveryEffects = false;
@@ -216,7 +214,7 @@ public sealed class DuelAvatar
         recoilDirection = worldPushDirection.sqrMagnitude > .0001f
             ? player.InverseTransformDirection(worldPushDirection.normalized) : Vector3.back;
         recoveringFeet = true; recoveryLandings = 0;
-        staggerStart = thrustStart = -100; thrustSoundPending = false;
+        staggerStart = -100;
         stepping = false; stepLift = 0f;
         ClearMotionHistory();
         suppressRecoveryEffects = false;
@@ -255,12 +253,13 @@ public sealed class DuelAvatar
         float blend = ReactionGuardBlend(now);
         if (guard != reactionGuard)
         {
-            reactionGuardFrom = guard ? 1f : blend;
+            reactionGuardFrom = blend;
             reactionGuardChanged = now; reactionGuard = guard;
         }
         // A recovering player can defend immediately, even during hit stop.
         // Without a guard, the struck sword keeps its original frozen pose.
-        if (age < 0f) return guard ? inputPose : reactionSword;
+        if (age < 0f) return new SwordPose(Vector3.Lerp(reactionSword.Position, inputPose.Position, blend),
+            Quaternion.Slerp(reactionSword.Rotation, inputPose.Rotation, blend));
         Vector3 currentChest = restChest + ChestOffset;
         SwordPose reaction = ReactionSwordPose.Apply(reactionSword, inputPose, reactionSwordChest, currentChest,
             direction, age, duration, blocked);
@@ -276,22 +275,12 @@ public sealed class DuelAvatar
             defenceRotation * inputPose.Rotation);
         SwordPose result = new SwordPose(Vector3.Lerp(reaction.Position, defence.Position, blend),
             Quaternion.Slerp(reaction.Rotation, defence.Rotation, blend));
-        return guard ? SwordPoseMath.ConstrainGuardPose(result) : result;
+        return guard && blend >= 1f ? SwordPoseMath.ConstrainGuardPose(result) : result;
     }
 
     private float ReactionGuardBlend(double now)
-        => reactionGuard ? 1f : Mathf.Lerp(reactionGuardFrom, 0f,
+        => Mathf.Lerp(reactionGuardFrom, reactionGuard ? 1f : 0f,
             Mathf.SmoothStep(0f, 1f, Mathf.Clamp01((float)(now - reactionGuardChanged) / GuardPoseTransition.DurationSeconds)));
-
-    public void Thrust(Vector3 worldDirection, double now, float durationSeconds)
-    {
-        thrustStart = now; thrustSeconds = Mathf.Max(.1f, durationSeconds);
-        thrustDirection = worldDirection.sqrMagnitude > .0001f ? worldDirection.normalized : player.forward;
-        // The gait follows the lunge with one planted support and a real lead
-        // foot contact, rather than sliding the whole character toward the tip.
-        stepping = false; stepLift = 0f; stepArmed = false;
-        thrustSoundPending = true;
-    }
 
     public void CopyMotionFrom(DuelAvatar other)
     {
@@ -309,19 +298,19 @@ public sealed class DuelAvatar
         reactionSword = other.reactionSword; reactionSwordChest = other.reactionSwordChest;
         reactionGuard = other.reactionGuard; reactionGuardFrom = other.reactionGuardFrom;
         reactionGuardChanged = other.reactionGuardChanged;
-        thrustStart = other.thrustStart; thrustSeconds = other.thrustSeconds; thrustDirection = other.thrustDirection;
-        thrustSoundPending = other.thrustSoundPending;
         recoveringFeet = other.recoveringFeet; recoveryLandings = other.recoveryLandings;
         renderedOrigin = other.renderedOrigin; previousOrigin = other.previousOrigin;
+        previousPlayerRoot = other.previousPlayerRoot;
         gaitVelocity = other.gaitVelocity; movingLeg = other.movingLeg; nextLeg = other.nextLeg;
-        previousStepOffset = other.previousStepOffset;
+        previousStepOffset = other.previousStepOffset; gaitDistance = other.gaitDistance;
         for (int i = 0; i < legs.Length && i < other.legs.Length; i++)
         {
             Leg source = other.legs[i], target = legs[i];
             target.WorldPlant = source.WorldPlant; target.WorldRotation = source.WorldRotation;
             target.StepStart = source.StepStart; target.StepTarget = source.StepTarget;
+            target.StepStartRotation = source.StepStartRotation;
             target.StepRotation = source.StepRotation; target.Elapsed = source.Elapsed;
-            target.Duration = source.Duration; target.Moving = source.Moving;
+            target.Duration = source.Duration; target.Lift = source.Lift; target.Moving = source.Moving;
         }
         ClearMotionHistory();
     }
@@ -395,59 +384,9 @@ public sealed class DuelAvatar
             sword.SetPositionAndRotation(visual.TransformPoint(defeatSwordGrip), visual.rotation * defeatSwordRotation);
     }
 
-    public static void AttachGripGlove(Transform body, Transform sword)
-    {
-        if (body == null || sword == null || sword.Find("ChambaraGripGlove") != null) return;
-        Material armor = null;
-        foreach (Renderer renderer in body.GetComponentsInChildren<Renderer>())
-            foreach (Material material in renderer.sharedMaterials)
-                if (material != null && material.name.StartsWith("Armor_") && !material.name.StartsWith("Armor_seams"))
-                { armor = material; break; }
-        if (armor == null) return;
-        var hands = new GameObject("ChambaraGripGlove"); hands.transform.SetParent(sword, false);
-        // Two plain spheres share the character's colour and travel with the
-        // grip in every pose. They add no combat geometry or separate fingers.
-        AddGlovePart(hands.transform, "Right hand", new Vector3(0f, 0f, .125f), Vector3.one * .23f, armor);
-        AddGlovePart(hands.transform, "Left hand", new Vector3(0f, 0f, -.125f), Vector3.one * .23f, armor);
-    }
-
-    private static void AddGlovePart(Transform parent, string name, Vector3 position, Vector3 scale, Material material)
-    {
-        if (gloveMesh == null)
-        {
-            const int sides = 16, rings = 10;
-            var vertices = new Vector3[(sides + 1) * (rings + 1)];
-            var normals = new Vector3[vertices.Length]; var uv = new Vector2[vertices.Length];
-            var triangles = new int[sides * rings * 6];
-            int index = 0;
-            for (int ring = 0; ring <= rings; ring++)
-                for (int side = 0; side <= sides; side++)
-                {
-                    float latitude = Mathf.PI * ring / rings, longitude = 2f * Mathf.PI * side / sides;
-                    Vector3 normal = new Vector3(Mathf.Sin(latitude) * Mathf.Cos(longitude), Mathf.Cos(latitude), Mathf.Sin(latitude) * Mathf.Sin(longitude));
-                    vertices[index] = normal * .5f; normals[index] = normal;
-                    uv[index++] = new Vector2(side / (float)sides, ring / (float)rings);
-                }
-            index = 0;
-            for (int ring = 0; ring < rings; ring++)
-                for (int side = 0; side < sides; side++)
-                {
-                    int a = ring * (sides + 1) + side, b = a + sides + 1;
-                    triangles[index++] = a; triangles[index++] = a + 1; triangles[index++] = b;
-                    triangles[index++] = a + 1; triangles[index++] = b + 1; triangles[index++] = b;
-                }
-            gloveMesh = new Mesh { name = "Chambara glove", vertices = vertices, normals = normals, uv = uv, triangles = triangles };
-            gloveMesh.RecalculateBounds();
-        }
-        var part = new GameObject(name, typeof(MeshFilter), typeof(MeshRenderer));
-        part.transform.SetParent(parent, false); part.transform.localPosition = position; part.transform.localScale = scale;
-        part.GetComponent<MeshFilter>().sharedMesh = gloveMesh;
-        part.GetComponent<MeshRenderer>().sharedMaterial = material;
-    }
-
     public void Tick(double now, float dt, Quaternion input, bool guard, float speed)
     {
-        Stepped = false; Swung = thrustSoundPending; thrustSoundPending = false;
+        Stepped = false; Swung = false;
         if (visual == null) return;
         RestoreBones();
         float sinceFinish = (float)(now - finishStart);
@@ -501,22 +440,11 @@ public sealed class DuelAvatar
             PoseRecoveryArms(push, impact, catchBalance, true);
             kneeReaction = impact * .8f;
         }
-        else if (now >= thrustStart && now < thrustStart + thrustSeconds)
-        {
-            // Match the sword's brief chamber, fast drive and measured return.
-            float swordAge = (float)(now - thrustStart) * ThrustPose.DurationSeconds / thrustSeconds;
-            float lunge = ThrustPose.Extension(swordAge) / ThrustPose.Reach;
-            Vector3 local = player.InverseTransformDirection(thrustDirection);
-            visual.localPosition += Vector3.down * (.025f * Mathf.Max(0f, lunge));
-            Rotate(hips, new Vector3(8f * local.z, -4f * local.x, -7f * local.x) * lunge);
-            Rotate(chest, new Vector3(15f * local.z, -7f * local.x, -10f * local.x) * lunge);
-            bodyTravel = Vector3.ProjectOnPlane(thrustDirection, player.up) * (.22f * lunge);
-        }
         bool guardRecoilActive = now >= guardRecoilStart && now < guardRecoilStart + ReactionSwordPose.GuardDurationSeconds;
         if (!staggerActive && !guardRecoilActive)
         {
             TrackSwing(direction, speed, guard, dt, forward, now);
-            if (!recoveringFeet && now >= thrustStart + thrustSeconds && movingLeg < 0)
+            if (!recoveringFeet && movingLeg < 0)
                 AdvanceStep(dt, forward, guard, speed);
         }
         if (staggerActive || guardRecoilActive)
@@ -536,7 +464,8 @@ public sealed class DuelAvatar
     private void ResetGrounding()
     {
         renderedOrigin = previousOrigin = player.position; gaitVelocity = Vector3.zero;
-        movingLeg = -1; nextLeg = 0; previousStepOffset = stepOffset;
+        previousPlayerRoot = player.position;
+        movingLeg = -1; nextLeg = 0; previousStepOffset = stepOffset; gaitDistance = 0f;
         foreach (Leg leg in legs)
         {
             leg.WorldPlant = player.TransformPoint(leg.Plant);
@@ -556,14 +485,41 @@ public sealed class DuelAvatar
     {
         if (!groundInitialized) ResetGrounding();
         dt = Mathf.Max(0f, dt);
-        // Combat knockback is 3 m in 0.12 s. Retain that rule while the visual
-        // body catches its balance at a finite running speed instead of skating.
         Vector3 targetOrigin = player.position + bodyTravel;
-        renderedOrigin = Vector3.MoveTowards(renderedOrigin, targetOrigin, 6f * dt);
+        Vector3 rootDelta = player.position - previousPlayerRoot;
+        previousPlayerRoot = player.position;
+        float rootSpeed = dt > 0f ? rootDelta.magnitude / dt : 0f;
+        gaitDistance = Mathf.Min(.45f, gaitDistance + Vector3.ProjectOnPlane(rootDelta, player.up).magnitude);
+        // Keep the rendered skeleton on the combat root. At recoil speeds the
+        // old capped follow left the hitbox several metres ahead of the body.
+        renderedOrigin = targetOrigin;
         renderedOrigin.y = targetOrigin.y;
         gaitVelocity = dt > 0f ? (renderedOrigin - previousOrigin) / dt : Vector3.zero;
         previousOrigin = renderedOrigin;
-        visual.position += renderedOrigin - player.position;
+        Vector3 visualBase = player.TransformPoint(initialVisualPosition) + renderedOrigin - player.position;
+        visual.position = visualBase;
+        // A three-metre combat advance exceeds a human stride. Animate its
+        // excess translation in a moving ground frame instead of leaving the
+        // support metres behind and asking IK to straighten both legs at it.
+        // Ordinary walking still has fixed world contacts. Recoil keeps its
+        // existing sliding recovery, independently of the attacker's gait.
+        Vector3 groundCarry = Vector3.zero;
+        Vector3 strideVelocity = gaitVelocity;
+        if (!recoveringFeet && legs.Length > 0 && dt > 0f)
+        {
+            float legLength = legs[0].UpperLength + legs[0].LowerLength;
+            float strideSpeed = Mathf.Max(.5f, legLength * 3f);
+            Vector3 planarDelta = Vector3.ProjectOnPlane(rootDelta, player.up);
+            groundCarry = planarDelta - Vector3.ClampMagnitude(planarDelta, strideSpeed * dt);
+            strideVelocity -= groundCarry / dt;
+        }
+        else if (rootSpeed > 12f) groundCarry = rootDelta;
+        if (groundCarry.sqrMagnitude > 0f)
+            foreach (Leg leg in legs)
+            {
+                leg.WorldPlant += groundCarry;
+                if (leg.Moving) { leg.StepStart += groundCarry; leg.StepTarget += groundCarry; }
+            }
         if (gaitVelocity.sqrMagnitude > 0.01f && stepping)
         {
             stepping = false; stepLift = 0f;
@@ -576,8 +532,8 @@ public sealed class DuelAvatar
             float t = Mathf.Clamp01(moving.Elapsed / moving.Duration);
             float eased = Mathf.SmoothStep(0f, 1f, t);
             moving.WorldPlant = Vector3.Lerp(moving.StepStart, moving.StepTarget, eased)
-                + Vector3.up * (Mathf.Sin(t * Mathf.PI) * 0.07f);
-            moving.WorldRotation = Quaternion.Slerp(moving.WorldRotation, moving.StepRotation, eased);
+                + Vector3.up * (Mathf.Sin(t * Mathf.PI) * moving.Lift);
+            moving.WorldRotation = Quaternion.Slerp(moving.StepStartRotation, moving.StepRotation, eased);
             if (t >= 1f)
             {
                 moving.WorldPlant = moving.StepTarget; moving.WorldRotation = moving.StepRotation;
@@ -594,14 +550,28 @@ public sealed class DuelAvatar
                 int i = (nextLeg + offset) % legs.Length;
                 float distance = Vector3.Distance(legs[i].WorldPlant, DesiredPlant(i));
                 float turn = Quaternion.Angle(legs[i].WorldRotation, player.rotation * legs[i].FootRotation);
-                if (distance > 0.10f || turn > 25f) { candidate = i; break; }
+                // Carrying a fast recoil keeps the stance close to its target,
+                // but still take one balancing step once the push begins.
+                if (distance > (recoveringFeet ? .10f : .08f) || turn > 25f
+                    || !recoveringFeet && rootSpeed > .1f && gaitDistance >= .16f
+                    || recoveringFeet && guardRecoilStart > -100d
+                        && recoveryLandings == 0 && rootDelta.sqrMagnitude > .0001f)
+                { candidate = i; break; }
             }
             if (candidate >= 0)
             {
                 Leg leg = legs[candidate]; movingLeg = candidate; leg.Moving = true;
-                leg.Elapsed = 0f; leg.Duration = Mathf.Lerp(0.22f, 0.06f, Mathf.Clamp01(gaitVelocity.magnitude / 6f));
+                gaitDistance = Mathf.Max(0f, gaitDistance - .2f);
+                leg.Elapsed = 0f;
+                float pace = Mathf.Clamp01(gaitVelocity.magnitude / 6f);
+                leg.Duration = recoveringFeet ? Mathf.Lerp(.22f, .06f, pace) : Mathf.Lerp(.22f, .105f, Mathf.Clamp01(gaitVelocity.magnitude / 3f));
+                leg.Lift = recoveringFeet ? .07f : Mathf.Lerp(.065f, .105f, Mathf.Clamp01(gaitVelocity.magnitude / 3f));
                 leg.StepStart = leg.WorldPlant;
-                leg.StepTarget = DesiredPlant(candidate) + Vector3.ClampMagnitude(gaitVelocity * 0.04f, 0.24f);
+                // Land ahead of the body, so the next support passes under it.
+                // Predict only the stride part: the moving frame is already
+                // applied to every contact on each tick.
+                leg.StepTarget = DesiredPlant(candidate) + Vector3.ClampMagnitude(
+                    recoveringFeet ? gaitVelocity * .04f : strideVelocity * leg.Duration, .24f);
                 leg.StepTarget.y = DesiredPlant(candidate).y;
                 // A fast combat push can put the desired stride beyond both
                 // legs' combined reach. Keep the next contact within a stance
@@ -618,6 +588,7 @@ public sealed class DuelAvatar
                     Vector3 bounded = centre + Vector3.ClampMagnitude(stride, span);
                     leg.StepTarget.x = bounded.x; leg.StepTarget.z = bounded.z;
                 }
+                leg.StepStartRotation = leg.WorldRotation;
                 leg.StepRotation = player.rotation * leg.FootRotation;
                 nextLeg = (candidate + 1) % legs.Length;
                 suppressRecoveryEffects = false;
@@ -631,6 +602,20 @@ public sealed class DuelAvatar
             if (Stepped) StepPosition = legs[0].WorldPlant;
         }
         previousStepOffset = stepOffset;
+
+        if (!recoveringFeet)
+            for (int i = 0; i < legs.Length; i++)
+            {
+                Leg leg = legs[i];
+                Vector3 stance = DesiredPlant(i);
+                Vector3 offset = Vector3.ProjectOnPlane(leg.WorldPlant - stance, player.up);
+                float strideReach = (leg.UpperLength + leg.LowerLength) * .45f;
+                Vector3 correction = Vector3.ClampMagnitude(offset, strideReach) - offset;
+                leg.WorldPlant += correction;
+                // Keep the next swing sample continuous with this bounded
+                // contact, but retain its landing target ahead of the body.
+                if (leg.Moving) leg.StepStart += correction;
+            }
 
         // Both targets must be reachable: constraining only the support lets
         // the IK clamp the swinging chain and lift its ankle above the arc.
@@ -652,6 +637,9 @@ public sealed class DuelAvatar
                 float maxHeight = Mathf.Sqrt(Mathf.Max(0.001f, reach * reach - horizontal * horizontal));
                 if (delta.y > maxHeight) visual.position += Vector3.down * (delta.y - maxHeight);
             }
+        // IK may ask the pelvis to move far enough to visibly detach the body
+        // from its logical origin. Let it bridge small stance errors only.
+        visual.position = visualBase + Vector3.ClampMagnitude(visual.position - visualBase, 0.12f);
         for (int i = 0; i < legs.Length; i++)
         {
             Leg leg = legs[i];
@@ -721,7 +709,7 @@ public sealed class DuelAvatar
         // landing sound/dust after resume, recenter or a controller change.
         suppressStepEffects = true;
         suppressRecoveryEffects = true;
-        Swung = Stepped = false; thrustSoundPending = false;
+        Swung = Stepped = false;
     }
 
     private void Rotate(Transform bone, Vector3 euler)
@@ -802,7 +790,7 @@ public sealed class DuelAvatar
     public void Reset()
     {
         reactionStart = finishStart = -100; falling = celebrating = stepping = defeated = false;
-        staggerStart = thrustStart = guardRecoilStart = -100; staggerSeconds = thrustSeconds = 0f; thrustSoundPending = false;
+        staggerStart = guardRecoilStart = -100; staggerSeconds = 0f;
         recoil = stepOffset = stepFrom = stepTo = stepElapsed = stepLift = 0f;
         recoveringFeet = false; recoveryLandings = landingLeg = 0;
         recoilDirection = Vector3.back; recoveryDirection = Vector3.zero;

@@ -232,10 +232,13 @@ public sealed class GameFlowPlayTests
                 }
                 Assert.That(visited.Contains(resume),Is.True,"Cannot reach Resume from "+start.name);
             }
-            buttons.Single(b=>b.name=="タイトルへ").Select();Call(flow,"NavigatePause",Vector2Int.down);
+            buttons.Single(b=>b.name=="タイトルに戻る").Select();Call(flow,"NavigatePause",Vector2Int.down);
             Assert.That(EventSystem.current.currentSelectedGameObject,Is.EqualTo(resume.gameObject));
             Assert.That(resume.image.GetComponents<Outline>().Any(o=>o.enabled&&o.effectColor==new Color(.08f,.57f,.86f)),Is.True);
-            Call(flow,"ConfirmPause");Assert.That(Get(flow,"PauseOpen"),Is.False);
+            yield return new WaitForSecondsRealtime(.25f);
+            Call(flow,"ConfirmPause");
+            Assert.That(Get(flow,"PauseOpen"),Is.False);
+            Assert.That(Get(Field<object>(flow,"registration"),"IsOpen"),Is.False);
             Assert.That(Screen,Is.EqualTo("Characters"));yield return null;
         }
     }
@@ -270,13 +273,14 @@ public sealed class GameFlowPlayTests
             Call(flow,"TogglePause");
             Button[] buttons=Field<GameObject>(flow,"pauseCanvas").GetComponentsInChildren<Button>();
             Assert.That(buttons.Where(b=>!IsDisplayButton(b)).Select(b=>b.GetComponentInChildren<Text>().text),
-                Is.EquivalentTo(new[]{"タイトルへ","ゲームに戻る","やり直す"}));
+                Is.EquivalentTo(new[]{"タイトルに戻る","ゲームに戻る","コントローラ","やり直す"}));
             Assert.That(buttons.Count(IsDisplayButton),Is.EqualTo(mode==1?0:2));
             GameObject overlay=Field<GameObject>(phone,"overlay");
             Assert.That(overlay.GetComponentsInChildren<Button>(true),Is.Empty,"QR cards cannot steal pause focus.");
             Assert.That(overlay.GetComponentsInChildren<Text>(true),Is.Empty,"Connection and guard text are not duplicated on QR cards.");
-            RawImage[] qr=overlay.GetComponentsInChildren<RawImage>();
-            Assert.That(qr.Length,Is.EqualTo(2));
+            Assert.That(overlay.activeSelf,Is.False,"QR appears only after selecting a player.");
+            RawImage[] qr=overlay.GetComponentsInChildren<RawImage>().Where(image=>image.gameObject.activeInHierarchy).ToArray();
+            Assert.That(qr.Length,Is.Zero);
             Assert.That(qr.All(image=>!image.raycastTarget),Is.True);
             UnityEngine.Canvas.ForceUpdateCanvases();
             foreach(RawImage image in qr)foreach(Button button in buttons)
@@ -291,7 +295,7 @@ public sealed class GameFlowPlayTests
         object calibration=Field<object>(flow,"axisCalibration");
         Call(calibration,"Update");
         Button entry=(Button)calibration.GetType().GetProperty("EntryButton").GetValue(calibration);
-        Assert.That(entry.gameObject.activeInHierarchy,Is.True,"The gameplay pause also exposes the requested axis calibration entry.");
+        Assert.That(entry.gameObject.activeInHierarchy,Is.False,"Registration owns the only controller settings entry.");
         Call(flow,"TogglePause");
         yield return null;
 
@@ -502,7 +506,6 @@ public sealed class GameFlowPlayTests
                 Assert.That(centered.Valid, Is.True);
                 Assert.That(centered.PoseGeneration, Is.GreaterThan(generation));
                 Assert.That(centered.AngularSpeed, Is.Zero);
-                Assert.That(centered.ThrustRequested, Is.False);
                 Assert.That(Vector3.Distance(Pose().Position, before.Position), Is.LessThan(.00001f));
                 Assert.That(Quaternion.Angle(Pose().Rotation, before.Rotation), Is.LessThan(.05f));
                 Read(10.36);
@@ -663,7 +666,7 @@ public sealed class GameFlowPlayTests
                 double clock=Field<double>(master,"matchTime");
                 buttons=Field<GameObject>(flow,"menuCanvas").GetComponentsInChildren<Button>().Where(b=>b.GetComponentInChildren<Text>().text=="プレビュー").ToArray();
                 RectTransform buttonRect=buttons[player].GetComponent<RectTransform>();
-                Assert.That(buttonRect.anchorMin,Is.EqualTo(new Vector2(count==1||player==1?1f:.5f,0f)));
+                Assert.That(buttonRect.anchorMin,Is.EqualTo(new Vector2(player==1?1f:.5f,0f)));
                 buttons[player].onClick.Invoke();
                 Assert.That(Screen,Is.EqualTo("Preview"));Assert.That(Get(master,"IsCharacterPreview"),Is.True);
                 Assert.That(Get(master,"PreviewPlayer"),Is.EqualTo(player));Assert.That(Get(flow,"IsPlaying"),Is.False);
@@ -694,7 +697,7 @@ public sealed class GameFlowPlayTests
                 Assert.That(Vector3.Distance(unguarded,swords[player].transform.localPosition),Is.GreaterThan(.01f),"Guard changes the runtime sword pose without leaving preview.");
                 InputSystem.QueueStateEvent(keyboard,new KeyboardState());yield return null;
                 yield return Press(Key.Escape);Assert.That(Get(flow,"PauseOpen"),Is.True);
-                Assert.That(Get(phone,"OverlayVisible"),Is.True);
+                Assert.That(Get(phone,"OverlayVisible"),Is.False);
                 Assert.That(Field<GameObject>(flow,"pauseCanvas").transform.Find("Connection controls/Menu background").GetComponent<RawImage>().enabled,Is.False);
                 yield return Press(Key.Escape);Assert.That(Screen,Is.EqualTo("Preview"));
                 AssertBackButton(Field<GameObject>(flow,"menuCanvas"),"もどる",60);
@@ -743,6 +746,13 @@ public sealed class GameFlowPlayTests
                 Quaternion tilted=Quaternion.Euler(35f,40f,30f);
                 SupplyMenuMotion(hardwareInput,phoneInput,false,slot,tilted,80f,false,true,++sequence,activeSensor);
                 Call(master,"LateUpdate");
+                double sourceChangedAt=Time.unscaledTimeAsDouble;
+                while(Time.unscaledTimeAsDouble-sourceChangedAt<GuardPoseTransition.DurationSeconds+.01d)
+                {
+                    yield return null;
+                    SupplyMenuMotion(hardwareInput,phoneInput,false,slot,tilted,0f,false,true,++sequence,activeSensor);
+                    Call(master,"LateUpdate");
+                }
                 Assert.That(Quaternion.Angle(neutral,swords[player].transform.localRotation),Is.GreaterThan(10f),
                     "Remote P"+(slot+1)+" moves the actual preview sword for player "+player+".");
                 Vector3 unguarded=swords[player].transform.localPosition;
@@ -812,10 +822,11 @@ public sealed class GameFlowPlayTests
         Call(flow,"Ready",0);
         AssertBackButton(Field<GameObject>(flow,"menuCanvas"),"もどる",60);
         Call(flow,"TogglePause");
-        AssertBackButton(Field<GameObject>(flow,"pauseCanvas"),"ゲームに戻る",60);
-        AssertBackButton(Field<GameObject>(flow,"pauseCanvas"),"タイトルへ",140);
-        AssertBackButton(Field<GameObject>(flow,"pauseCanvas"),"やり直す",220);
-        Field<GameObject>(flow,"pauseCanvas").GetComponentsInChildren<Button>().Single(b=>b.GetComponentInChildren<Text>().text=="ゲームに戻る").onClick.Invoke();
+        AssertBackButton(Field<GameObject>(flow,"pauseCanvas"),"コントローラ",60);
+        AssertBackButton(Field<GameObject>(flow,"pauseCanvas"),"タイトルに戻る",300);
+        AssertBackButton(Field<GameObject>(flow,"pauseCanvas"),"やり直す",140);
+        AssertBackButton(Field<GameObject>(flow,"pauseCanvas"),"ゲームに戻る",220);
+        Call(flow,"TogglePause");
         Assert.That(Get(flow,"PauseOpen"),Is.False);Assert.That(Screen,Is.EqualTo("Characters"));
         yield return null;
     }
@@ -879,10 +890,12 @@ public sealed class GameFlowPlayTests
     public IEnumerator ThirdTitleChoiceStartsFreeModeAndNormalChoicesClearIt()
     {
         Button[] modes = Field<GameObject>(flow,"menuCanvas").GetComponentsInChildren<Button>();
-        Assert.That(modes.Length, Is.EqualTo(3));
+        Assert.That(modes.Length, Is.EqualTo(4));
         Assert.That(modes.Select(b=>b.GetComponentInChildren<Text>().text), Does.Contain("フリーモード"));
         Call(flow,"Navigate",1,Vector2Int.up);
-        Assert.That(Field<int>(flow,"titleChoice"), Is.EqualTo(2), "Either controller can wrap to free mode.");
+        Assert.That(Field<int>(flow,"titleChoice"), Is.EqualTo(3), "Either controller can wrap to the tutorial.");
+        Call(flow,"Navigate",1,Vector2Int.up);
+        Assert.That(Field<int>(flow,"titleChoice"), Is.EqualTo(2), "Either controller can focus free mode.");
         Call(flow,"Confirm",1);
         Assert.That(Screen, Is.EqualTo("Characters"));
         Assert.That(Get(master,"IsFreeMode"), Is.True);
@@ -937,7 +950,7 @@ public sealed class GameFlowPlayTests
         Assert.That(Screen, Is.EqualTo("Characters"));
         Assert.That(Get(master,"IsSingleMode"), Is.True);
         Call(flow,"TogglePause");
-        Assert.That(Get(phone,"OverlayVisible"), Is.True);
+        Assert.That(Get(phone,"OverlayVisible"), Is.False);
         GameObject[] cards=Field<GameObject[]>(phone,"slotCards");
         Assert.That(cards.All(c=>c.activeSelf), Is.True,"Both controllers can operate the single-player menu.");
         foreach(Button button in Field<GameObject>(flow,"pauseCanvas").GetComponentsInChildren<Button>())
@@ -990,10 +1003,12 @@ public sealed class GameFlowPlayTests
         InputSystem.QueueStateEvent(keyboard,new KeyboardState());yield return null;
         InputSystem.QueueStateEvent(keyboard,new KeyboardState(Key.LeftShift));yield return null;
         Assert.That(master.GetType().GetMethod("CharacterIndex").Invoke(master,new object[]{0}),Is.EqualTo(1),"Guard commits the focused character.");
-        Assert.That(Field<int[]>(flow,"row")[0],Is.EqualTo(1));
+        Assert.That(Field<int[]>(flow,"row")[0],Is.EqualTo(0));
+        InputSystem.QueueStateEvent(keyboard,new KeyboardState(Key.S));yield return null;
         InputSystem.QueueStateEvent(keyboard,new KeyboardState());yield return null;
         InputSystem.QueueStateEvent(keyboard,new KeyboardState(Key.LeftShift));yield return null;
-        Assert.That(Field<int[]>(flow,"row")[0],Is.EqualTo(2));
+        Assert.That(Field<int[]>(flow,"row")[0],Is.EqualTo(1));
+        InputSystem.QueueStateEvent(keyboard,new KeyboardState(Key.S));yield return null;
         yield return new WaitForSecondsRealtime(.3f);
         Assert.That(Screen,Is.EqualTo("Characters"));
         InputSystem.QueueStateEvent(keyboard,new KeyboardState());yield return null;
@@ -1013,7 +1028,7 @@ public sealed class GameFlowPlayTests
             Assert.That(Screen,Is.EqualTo(expected));
             yield return Press(Key.Escape);
             Assert.That(Get(flow,"PauseOpen"),Is.True);
-            Assert.That(Get(phone,"OverlayVisible"),Is.True);
+            Assert.That(Get(phone,"OverlayVisible"),Is.False);
             Assert.That(Get(master,"IsPaused"),Is.True);
             yield return Press(Key.Escape);
             Assert.That(Get(flow,"PauseOpen"),Is.False);
@@ -1049,11 +1064,15 @@ public sealed class GameFlowPlayTests
         Assert.That(master.GetType().GetMethod("CharacterIndex").Invoke(master,new object[]{0}), Is.EqualTo(0));
         yield return Press(Key.RightShift);
         Assert.That(master.GetType().GetMethod("CharacterIndex").Invoke(master,new object[]{0}), Is.EqualTo(1));
+        Assert.That(Field<int[]>(flow,"row")[0], Is.Zero);
+        yield return Press(Key.DownArrow);
         yield return Press(Key.RightArrow);
         Assert.That(Field<int[]>(flow,"focusedColor")[0], Is.EqualTo(1));
         Assert.That(master.GetType().GetMethod("ColorIndex").Invoke(master,new object[]{0}), Is.EqualTo(0));
         yield return Press(Key.RightShift);
         Assert.That(master.GetType().GetMethod("ColorIndex").Invoke(master,new object[]{0}), Is.EqualTo(1));
+        Assert.That(Field<int[]>(flow,"row")[0], Is.EqualTo(1));
+        yield return Press(Key.DownArrow);
         yield return Press(Key.RightShift);
         Assert.That(Screen, Is.EqualTo("Playing"));
         Assert.That(Get(flow,"IsPlaying"), Is.True, "P2 starts directly from the shared character selection.");
@@ -1071,7 +1090,7 @@ public sealed class GameFlowPlayTests
         Call(flow,"ChooseMode",false);
         Call(flow,"Navigate",0,Vector2Int.right);
         Call(flow,"Navigate",1,Vector2Int.left);
-        Assert.That(Field<int[]>(flow,"focusedCharacter"), Is.EqualTo(new[]{1,3}));
+        Assert.That(Field<int[]>(flow,"focusedCharacter"), Is.EqualTo(new[]{1,(int)Get(master,"CharacterCount")-1}));
         Assert.That(master.GetType().GetMethod("CharacterIndex").Invoke(master,new object[]{0}), Is.EqualTo(0));
         Assert.That(master.GetType().GetMethod("CharacterIndex").Invoke(master,new object[]{1}), Is.EqualTo(0));
         Call(flow,"Navigate",1,Vector2Int.down); // Color row for P2 alone.
@@ -1080,7 +1099,7 @@ public sealed class GameFlowPlayTests
         Assert.That(Field<int[]>(flow,"focusedColor")[1], Is.EqualTo(2));
         Assert.That(master.GetType().GetMethod("ColorIndex").Invoke(master,new object[]{1}), Is.EqualTo(1));
         Call(flow,"Ready",1);
-        Assert.That(master.GetType().GetMethod("CharacterIndex").Invoke(master,new object[]{1}), Is.EqualTo(3));
+        Assert.That(master.GetType().GetMethod("CharacterIndex").Invoke(master,new object[]{1}), Is.EqualTo((int)Get(master,"CharacterCount")-1));
         Assert.That(master.GetType().GetMethod("ColorIndex").Invoke(master,new object[]{1}), Is.EqualTo(2));
         Assert.That(Screen, Is.EqualTo("Characters"));
         Call(flow,"Ready",0);
@@ -1093,231 +1112,94 @@ public sealed class GameFlowPlayTests
     }
 
     [UnityTest]
-    public IEnumerator PhoneAndUsbWorldAngularVelocityNavigatesRegardlessOfPostureAboveThreeSixty()
+    public IEnumerator PhoneAndUsbGyroMenuKeepsDirectionsAcrossDifferentRecenterPositions()
     {
-        // Inactive hubs skip Awake: inject real input samples without opening
-        // another signaling connection or native serial receiver.
-        MonoBehaviour hardwareInput = InactiveHub("HardwareControllerHub");
-        MonoBehaviour phoneInput = InactiveHub("PhoneControllerHub");
-        Array sensors = Field<Array>(flow, "motion");
-        foreach (MonoBehaviour sensor in sensors)
-        {
-            SetField(sensor, "hardware", hardwareInput);
-            SetField(sensor, "hub", phoneInput);
-        }
-        flow.enabled = false;
-        uint sequence = 0;
+        MonoBehaviour hardwareInput=InactiveHub("HardwareControllerHub"), phoneInput=InactiveHub("PhoneControllerHub");
+        Array sensors=Field<Array>(flow,"motion");
+        foreach(MonoBehaviour sensor in sensors){SetField(sensor,"hardware",hardwareInput);SetField(sensor,"hub",phoneInput);}
+        flow.enabled=false; uint sequence=0;
         try
         {
-            foreach (bool usePhone in new[] { false, true })
-                for (int slot = 0; slot < 2; slot++)
+            foreach(bool usePhone in new[]{false,true})
+                foreach(int slot in new[]{0,1})
                 {
-                    foreach (object state in Field<Array>(phoneInput, "slots"))
-                    { SetField(state, "ChannelOpen", false); SetField(state, "HasSample", false); }
-                    Array.Clear(Field<bool[]>(hardwareInput, "valid"), 0, 2);
-                    foreach (MonoBehaviour sensor in sensors) Call(sensor, "Update");
-                    Call(flow, "ChooseMode", usePhone); // USB: independent duel; phone: shared single.
-                    yield return new WaitForSecondsRealtime(.25f);
-                    int selectedPlayer = usePhone ? 0 : slot;
-                    int before = Field<int[]>(flow, "focusedCharacter")[selectedPlayer];
-                    int otherBefore = Field<int[]>(flow, "focusedCharacter")[1 - selectedPlayer];
-                    MonoBehaviour activeSensor = (MonoBehaviour)sensors.GetValue(slot);
-                    // Real decoded phone postures: screen up for P1, screen left
-                    // for P2. Neither may use the calibrated sword's local frame.
-                    Quaternion reference = usePhone
-                        ? (slot == 0 ? Quaternion.Euler(90f, 0f, 0f) : Quaternion.Euler(0f, 0f, -90f))
-                        : Quaternion.Euler(23f, -37f, 62f);
-                    bool gyroValid = slot == 0; // P2 also covers an orientation-only remote.
-                    // Phone navigation uses its fixed sensor-world frame. USB
-                    // uses the gameplay reference, independent of BNO heading.
-                    Vector3 horizontalAxis = usePhone ? Vector3.forward : reference * Vector3.up;
-                    void Horizontal(float angle, float speed, bool guard = false)
+                    foreach(object state in Field<Array>(phoneInput,"slots")){SetField(state,"ChannelOpen",false);SetField(state,"HasSample",false);}
+                    Array.Clear(Field<bool[]>(hardwareInput,"valid"),0,2);
+                    foreach(MonoBehaviour sensor in sensors)Call(sensor,"Update");
+                    Call(flow,"ChooseMode",false); yield return new WaitForSecondsRealtime(.25f);
+                    MonoBehaviour active=(MonoBehaviour)sensors.GetValue(slot);
+                    foreach(Quaternion rotation in new[]{Quaternion.identity,Quaternion.Euler(45,-75,120)})
                     {
-                        Quaternion pose = Quaternion.AngleAxis(angle, horizontalAxis) * reference;
-                        Vector3 localVelocity = Quaternion.Inverse(pose) * (horizontalAxis * speed);
-                        SupplyMenuMotion(hardwareInput, phoneInput, usePhone, slot, pose, speed,
-                            guard, gyroValid, ++sequence, activeSensor, localVelocity);
+                        Call(active,"Recenter");
+                        void Send(Vector2 direction,bool guard=false)
+                        {
+                            Vector3 velocity=new Vector3(-direction.y*480,direction.x*480,0);
+                            Vector3 gyro=usePhone?Quaternion.Inverse(rotation)*Quaternion.Euler(90,0,0)*velocity:velocity;
+                            SupplyMenuMotion(hardwareInput,phoneInput,usePhone,slot,rotation,gyro.magnitude,guard,true,++sequence,active,gyro);
+                        }
+                        Send(Vector2.zero);
+                        int before=Field<int[]>(flow,"focusedCharacter")[slot];
+                        Send(Vector2.right);
+                        Assert.That(Field<int[]>(flow,"focusedCharacter")[slot],Is.EqualTo((before+1)%(int)Get(master,"CharacterCount")));
+                        Send(Vector2.right);
+                        Assert.That(Field<int[]>(flow,"focusedCharacter")[slot],Is.EqualTo((before+1)%(int)Get(master,"CharacterCount")),"A held fast burst moves only once.");
+                        Send(Vector2.zero); Send(Vector2.zero,true);
+                        Assert.That(Field<int[]>(flow,"row")[slot],Is.Zero,"Confirming a character must keep its row.");
+                        Send(Vector2.zero); Send(Vector2.down);
+                        Assert.That(Field<int[]>(flow,"row")[slot],Is.EqualTo(1));
+                        Send(Vector2.zero); Send(Vector2.zero,true);
+                        Assert.That(Field<int[]>(flow,"row")[slot],Is.EqualTo(1),"Confirming a colour must keep its row.");
+                        Call(flow,"Navigate",slot,Vector2Int.up);
                     }
-                    foreach (float delay in new[] { 0f, .06f, .12f })
-                    {
-                        if (delay > 0f) yield return new WaitForSecondsRealtime(delay);
-                        Horizontal(0f, 0f);
-                    }
-                    Assert.That(Get(activeSensor, "ActiveSource").ToString(), Is.EqualTo(usePhone ? "Phone" : "Hardware"));
-                    Assert.That(Quaternion.Angle((Quaternion)Get(activeSensor,"ReferenceRotation"),reference),
-                        Is.LessThan(.01f),"The reference must remain fixed through the menu swings.");
-                    // Below-threshold tilts must not change focus on either path.
-                    for (int step = 1; step <= 3; step++)
-                    {
-                        yield return new WaitForSecondsRealtime(.05f);
-                        Horizontal(step * 3f, 60f);
-                        Assert.That(Field<int[]>(flow, "focusedCharacter")[selectedPlayer], Is.EqualTo(before));
-                    }
-                    // One continuous fast burst moves exactly one item.
-                    for (int step = 1; step <= 3; step++)
-                    {
-                        yield return new WaitForSecondsRealtime(.05f);
-                        Horizontal(9f + step * 24f, 480f);
-                    }
-                    int expected = (before + 1) % (int)Get(master, "CharacterCount");
-                    Assert.That(Field<int[]>(flow, "focusedCharacter")[selectedPlayer], Is.EqualTo(expected),
-                        (usePhone ? "Phone" : "USB") + " P" + (slot + 1) + " must move focus once.");
-                    Assert.That(master.GetType().GetMethod("CharacterIndex").Invoke(master, new object[] { selectedPlayer }),
-                        Is.EqualTo(before), "Motion changes focus; guard commits the appearance.");
-                    if (!usePhone)
-                        Assert.That(Field<int[]>(flow, "focusedCharacter")[1 - selectedPlayer], Is.EqualTo(otherBefore));
-                    // A slow partial return rearms without reaching the original pose.
-                    yield return new WaitForSecondsRealtime(.05f);
-                    Horizontal(81f, 0f);
-                    Assert.That(Field<int[]>(flow, "focusedCharacter")[selectedPlayer], Is.EqualTo(expected));
-                    foreach (float angle in new[] { 75f, 69f, 63f, 57f })
-                    {
-                        yield return new WaitForSecondsRealtime(.05f);
-                        Horizontal(angle, -120f);
-                        Assert.That(Field<int[]>(flow, "focusedCharacter")[selectedPlayer], Is.EqualTo(expected));
-                    }
-                    expected = (expected + 1) % (int)Get(master, "CharacterCount");
-                    foreach (float angle in new[] { 81f, 105f })
-                    {
-                        yield return new WaitForSecondsRealtime(.05f);
-                        Horizontal(angle, 480f);
-                        Assert.That(Field<int[]>(flow, "focusedCharacter")[selectedPlayer], Is.EqualTo(expected),
-                            "The next fast swing works after a partial slow return.");
-                    }
-                    Horizontal(105f, 0f);
-                    expected = (expected - 1 + (int)Get(master, "CharacterCount")) % (int)Get(master, "CharacterCount");
-                    foreach (float angle in new[] { 81f, 57f })
-                    {
-                        Horizontal(angle, -480f);
-                        Assert.That(Field<int[]>(flow, "focusedCharacter")[selectedPlayer], Is.EqualTo(expected),
-                            "A left swing moves left even when the phone screen faces up.");
-                    }
-                    Horizontal(57f, 0f, true);
-                    Assert.That(master.GetType().GetMethod("CharacterIndex").Invoke(master, new object[] { selectedPlayer }),
-                        Is.EqualTo(expected), "The actual remote guard edge commits the focused character.");
-                    Assert.That(Field<int[]>(flow, "row")[selectedPlayer], Is.EqualTo(1));
-                    Quaternion rest = reference * Quaternion.Euler(60f, 0f, 0f);
-                    Call(flow, "TogglePause");
-                    yield return new WaitForSecondsRealtime(.25f);
-                    SupplyMenuMotion(hardwareInput, phoneInput, usePhone, slot, rest, 0f,
-                        false, gyroValid, ++sequence, activeSensor);
-                    Assert.That(EventSystem.current.currentSelectedGameObject.name, Is.EqualTo("ゲームに戻る"));
-                    Vector3 verticalAxis = usePhone ? Vector3.right : reference * Vector3.right;
-                    Quaternion up = Quaternion.AngleAxis(-24f, verticalAxis) * rest;
-                    Vector3 upVelocity = Quaternion.Inverse(up) * (-verticalAxis * 480f);
-                    SupplyMenuMotion(hardwareInput, phoneInput, usePhone, slot, up, 0f,
-                        false, gyroValid, ++sequence, activeSensor, upVelocity);
-                    Assert.That(EventSystem.current.currentSelectedGameObject.name, Is.EqualTo("タイトルへ"),
-                        "Raising the controller also moves up in the connection pause.");
-                    SupplyMenuMotion(hardwareInput, phoneInput, usePhone, slot, up, 0f,
-                        true, gyroValid, ++sequence, activeSensor);
-                    Assert.That(Get(flow, "PauseOpen"), Is.False);
-                    Assert.That(Screen, Is.EqualTo("Title"), "Guard confirms the selected pause action.");
+                    Call(flow,"ReturnToTitle");
                 }
         }
-        finally
-        {
-            Object.Destroy(hardwareInput.gameObject);
-            Object.Destroy(phoneInput.gameObject);
-        }
+        finally{Object.Destroy(hardwareInput.gameObject);Object.Destroy(phoneInput.gameObject);}
     }
 
     [UnityTest]
-    public IEnumerator PhysicalPhonePacketsMoveFromBasicDownToRedAndRightToNextCharacter()
+    public IEnumerator OrientationOnlyMenuFallbackUsesAngularDeltaInsteadOfSwordTipTravel()
     {
-        MonoBehaviour phoneInput = InactiveHub("PhoneControllerHub");
-        MonoBehaviour hardwareInput = InactiveHub("HardwareControllerHub");
-        Array sensors = Field<Array>(flow, "motion");
-        foreach (MonoBehaviour sensor in sensors)
-        {
-            SetField(sensor, "hub", phoneInput); SetField(sensor, "hardware", hardwareInput);
-        }
-        flow.enabled = false;
-        uint sequence = 0;
-        // These wire values are also checked against physical browser events
-        // in apps/phone: default screen up, screen left, landscape and saved
-        // X/Z swap. Pass them through the real decoder and visible menu.
-        var packets = new[] {
-            (rotation: new Quaternion(-.70710677f, 0f, 0f, .70710677f),
-                down: new Vector3(-480f, 0f, 0f), right: new Vector3(0f, -480f, 0f)),
-            (rotation: new Quaternion(-.5f, .5f, .5f, .5f),
-                down: new Vector3(0f, 480f, 0f), right: new Vector3(-480f, 0f, 0f)),
-            (rotation: new Quaternion(-.5f, -.5f, .5f, .5f),
-                down: new Vector3(0f, 0f, 480f), right: new Vector3(0f, -480f, 0f)),
-            (rotation: new Quaternion(-.70710677f, 0f, .70710677f, 0f),
-                down: new Vector3(0f, 0f, 480f), right: new Vector3(-480f, 0f, 0f))
-        };
+        MonoBehaviour hardwareInput=InactiveHub("HardwareControllerHub"),phoneInput=InactiveHub("PhoneControllerHub");
+        Array sensors=Field<Array>(flow,"motion");
+        foreach(MonoBehaviour sensor in sensors){SetField(sensor,"hardware",hardwareInput);SetField(sensor,"hub",phoneInput);}
+        flow.enabled=false;uint sequence=0;
         try
         {
-            foreach (var fixture in packets)
-                foreach (bool single in new[] { true, false })
-                for (int slot = 0; slot < 2; slot++)
-                {
-                    foreach (object state in Field<Array>(phoneInput, "slots"))
-                    { SetField(state, "ChannelOpen", false); SetField(state, "HasSample", false); }
-                    foreach (MonoBehaviour sensor in sensors) Call(sensor, "Update");
-                    int player = single ? 0 : slot;
-                    Call(master, "SetCharacter", player, 0); Call(master, "SetColor", player, 0);
-                    Call(flow, "ChooseMode", single);
-                    yield return new WaitForSecondsRealtime(.25f);
-                    MonoBehaviour activeSensor = (MonoBehaviour)sensors.GetValue(slot);
-                    void Send(Vector3 wireGyro)
-                    {
-                        byte[] packet = new byte[56]; packet[0] = 1; packet[1] = 6;
-                        void Write(int offset, byte[] value) => Array.Copy(value, 0, packet, offset, value.Length);
-                        Write(4, BitConverter.GetBytes(++sequence));
-                        Write(8, BitConverter.GetBytes(sequence * 50d));
-                        Write(16, BitConverter.GetBytes(fixture.rotation.x));
-                        Write(20, BitConverter.GetBytes(fixture.rotation.y));
-                        Write(24, BitConverter.GetBytes(fixture.rotation.z));
-                        Write(28, BitConverter.GetBytes(fixture.rotation.w));
-                        Write(32, BitConverter.GetBytes(wireGyro.x));
-                        Write(36, BitConverter.GetBytes(wireGyro.y));
-                        Write(40, BitConverter.GetBytes(wireGyro.z));
-                        object[] args = { packet, Time.realtimeSinceStartupAsDouble, null };
-                        Assert.That(Type.GetType("MotionPacketCodec, Assembly-CSharp", true)
-                            .GetMethod("TryDecodeMotion").Invoke(null, args), Is.True);
-                        object state = Field<Array>(phoneInput, "slots").GetValue(slot);
-                        SetField(state, "LatestSample", args[2]);
-                        SetField(state, "HasSample", true); SetField(state, "ChannelOpen", true);
-                        Call(activeSensor, "Update"); Call(flow, "Update");
-                    }
-                    Send(Vector3.zero);
-                    Assert.That(Get(activeSensor, "ActiveSource").ToString(), Is.EqualTo("Phone"));
-                    Send(fixture.down);
-                    Assert.That(Field<int[]>(flow, "row")[player], Is.EqualTo(1), "Down must move to the color row.");
-                    Assert.That(Field<int[]>(flow, "focusedCharacter")[player], Is.Zero, "Down must leave Basic focused.");
-                    Assert.That(Field<int[]>(flow, "focusedColor")[player], Is.Zero, "The first color is red.");
-                    // Check the visible color cursor too, rather than only the
-                    // internal row. The selected player's red swatch is outlined.
-                    Button[] colors = Field<GameObject>(flow, "menuCanvas").GetComponentsInChildren<Button>()
-                        .Where(b => b.GetComponent<RectTransform>().sizeDelta == new Vector2(65f, 56f)).ToArray();
-                    Assert.That(colors[player * 6].GetComponent<Outline>(), Is.Not.Null);
-                    Send(Vector3.zero); Send(fixture.right); // Right along colors.
-                    Assert.That(Field<int[]>(flow, "row")[player], Is.EqualTo(1));
-                    Assert.That(Field<int[]>(flow, "focusedColor")[player], Is.EqualTo(1));
-                    Send(Vector3.zero); Send(-fixture.down); // Up to Basic.
-                    Assert.That(Field<int[]>(flow, "row")[player], Is.Zero);
-                    Send(Vector3.zero); Send(fixture.right); // Right to Sukkiri.
-                    Assert.That(Field<int[]>(flow, "row")[player], Is.Zero);
-                    Assert.That(Field<int[]>(flow, "focusedCharacter")[player], Is.EqualTo(1));
-                    Assert.That(master.GetType().GetMethod("CharacterIndex").Invoke(master, new object[] { player }),
-                        Is.EqualTo(0), "Swinging moves the cursor without confirming the character.");
-                    Assert.That(master.GetType().GetMethod("ColorIndex").Invoke(master, new object[] { player }), Is.EqualTo(0));
-                }
+            foreach(bool phoneMode in new[]{false,true})
+            {
+                foreach(object state in Field<Array>(phoneInput,"slots")){SetField(state,"ChannelOpen",false);SetField(state,"HasSample",false);}
+                Array.Clear(Field<bool[]>(hardwareInput,"valid"),0,2);
+                foreach(MonoBehaviour sensor in sensors)Call(sensor,"Update");
+                Call(flow,"ChooseMode",true);yield return new WaitForSecondsRealtime(.25f);
+                MonoBehaviour sensor0=(MonoBehaviour)sensors.GetValue(0);
+                Quaternion rest=Quaternion.Euler(30,-60,40);
+                void Send(Quaternion pose)=>SupplyMenuMotion(hardwareInput,phoneInput,phoneMode,0,pose,0,false,false,++sequence,sensor0,Vector3.zero);
+                Quaternion Gesture(Vector3 axis)=>phoneMode?Quaternion.Euler(90,0,0)*Quaternion.AngleAxis(24,axis)*Quaternion.Euler(-90,0,0)*rest
+                    :rest*Quaternion.AngleAxis(24,axis);
+                Send(rest);Send(Gesture(Vector3.right));
+                Assert.That(Field<int[]>(flow,"row")[0],Is.EqualTo(1));
+                Call(flow,"ResetMenuGestures");Send(rest);Send(Gesture(Vector3.up));
+                Assert.That(Field<int[]>(flow,"focusedColor")[0],Is.EqualTo(1));
+                Call(flow,"ReturnToTitle");
+            }
         }
-        finally
-        {
-            Object.Destroy(phoneInput.gameObject); Object.Destroy(hardwareInput.gameObject);
-        }
+        finally{Object.Destroy(hardwareInput.gameObject);Object.Destroy(phoneInput.gameObject);}
     }
 
     private void SupplyMenuMotion(MonoBehaviour hardwareInput, MonoBehaviour phoneInput, bool usePhone,
         int slot, Quaternion rotation, float speed, bool guard, bool gyroValid, uint sequence, MonoBehaviour sensor,
-        Vector3? angularVelocity = null, ushort resetCounter = 0, bool recenterHeld = false)
+        Vector3? angularVelocity = null, ushort resetCounter = 0, bool recenterHeld = false,
+        bool rawHardwareFrame = false)
     {
+        Vector3 gyro = angularVelocity ?? new Vector3(0f, 0f, speed);
+        if (!usePhone && rawHardwareFrame)
+        {
+            rotation = HardwareControllerFrame.Rotation(rotation);
+            gyro = HardwareControllerFrame.Vector(gyro);
+        }
         object sample = Activator.CreateInstance(Type.GetType("MotionSample, Assembly-CSharp", true), new object[] {
-            rotation, angularVelocity ?? new Vector3(0f, 0f, speed), Vector3.zero, guard, true, gyroValid, false,
+            rotation, gyro, Vector3.zero, guard, true, gyroValid, false,
             sequence, resetCounter, sequence * 50d, Time.realtimeSinceStartupAsDouble, recenterHeld
         });
         if (usePhone)

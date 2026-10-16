@@ -31,7 +31,7 @@ namespace SchoolFestival.Combat
                 (direction - previousDirection) / dt, 1f - Mathf.Exp(-dt / .06f));
 
         public const float BladeStart = .55f, BladeLength = 2.1f, BodyRadius = .43f;
-        public const float BladePadding = .23f, ThrustExtraPadding = .1f;
+        public const float BladePadding = .23f;
         public const float GuardPadding = .34f, GuardBladeStart = .30f;
         // Reconstruction tolerances, not published Nintendo implementation values.
         public const float GuardCrossingAngle = 45f;
@@ -64,20 +64,6 @@ namespace SchoolFestival.Combat
                 ? fraction : 0f;
         }
 
-        public static float ThrustForwardFraction(CombatPose pose)
-        {
-            if (Vector3.Angle(pose.PreviousBlade, pose.Forward) <= 1f) return 0f;
-            float low = 0f, high = 1f;
-            for (int step = 0; step < 18; step++)
-            {
-                float middle = (low + high) * .5f;
-                if (Vector3.Angle(Vector3.Slerp(pose.PreviousBlade, pose.Blade, middle), pose.Forward) <= 1f)
-                    high = middle;
-                else low = middle;
-            }
-            return high;
-        }
-
         private static bool CutCrossesGuard(CombatPose attack, Vector3 guardedBlade, Vector3 defenceForward)
         {
             Vector3 cut = Vector3.ProjectOnPlane(IncomingCutDirection(attack), defenceForward);
@@ -99,17 +85,17 @@ namespace SchoolFestival.Combat
             return new SwordPose(grip, Quaternion.FromToRotation(pose.Blade, blade) * currentRotation);
         }
 
-        public static CombatContactResult Resolve(AttackKind kind, CombatPose attack, CombatPose defence, bool guard)
+        public static CombatContactResult Resolve(AttackKind kind, CombatPose attack, CombatPose defence, bool guard, float from = 0f)
         {
             if (!AcceptsMovement(kind, attack)
                 || Vector3.Dot(defence.BodyCenter - attack.BodyCenter, attack.Forward) <= 0f) return default;
-            float until = kind == AttackKind.Cut ? CutApproachFraction(attack) : 1f;
-            float from = kind == AttackKind.Thrust ? ThrustForwardFraction(attack) : 0f;
+            float until = CutApproachFraction(attack);
+            if (from > until) return default;
+            from = Mathf.Max(0f, from);
             Sample(attack, from, out Vector3 startingGrip, out Vector3 startingBlade);
             Sample(attack, until, out Vector3 offensiveGrip, out Vector3 offensiveBlade);
             bool body = TrySweptBladeTouchesBody(startingGrip, startingBlade, offensiveGrip,
-                offensiveBlade, defence.BodyCenter, out float bodyHit,
-                kind == AttackKind.Thrust ? ThrustExtraPadding : 0f);
+                offensiveBlade, defence.BodyCenter, out float bodyHit);
             bodyHit = from + bodyHit * (until - from);
             bool facing = Vector3.Dot(attack.BodyCenter - defence.BodyCenter, defence.Forward) > 0f;
             bool ready = guard && facing;
@@ -152,22 +138,17 @@ namespace SchoolFestival.Combat
             => TryBladesClash(first, second, out _);
 
         private static bool AcceptsMovement(AttackKind kind, CombatPose pose)
-            => kind == AttackKind.Cut ? pose.AngularMoving && CutApproachFraction(pose) > 0f : kind == AttackKind.Thrust
-                && Vector3.Angle(pose.Blade, pose.Forward) <= 1f
-                && Vector3.Dot(pose.Grip - pose.PreviousGrip, pose.Forward) > .0001f;
+            => kind == AttackKind.Cut && pose.AngularMoving && CutApproachFraction(pose) > 0f;
 
         public static bool TryBladesClash(CombatPose first, CombatPose second, out float fraction,
-            AttackKind firstKind = AttackKind.Cut, AttackKind secondKind = AttackKind.Cut)
+            AttackKind firstKind = AttackKind.Cut, AttackKind secondKind = AttackKind.Cut, float from = 0f)
         {
             fraction = float.PositiveInfinity;
             if (!AcceptsMovement(firstKind, first) || !AcceptsMovement(secondKind, second)) return false;
             int steps = Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(Vector3.Angle(first.PreviousBlade, first.Blade),
                 Vector3.Angle(second.PreviousBlade, second.Blade)) / 5f), Mathf.CeilToInt(Mathf.Max(
                 Vector3.Distance(first.PreviousGrip, first.Grip), Vector3.Distance(second.PreviousGrip, second.Grip)) / .08f));
-            float from = Mathf.Max(firstKind == AttackKind.Thrust ? ThrustForwardFraction(first) : 0f,
-                secondKind == AttackKind.Thrust ? ThrustForwardFraction(second) : 0f);
-            float until = Mathf.Min(firstKind == AttackKind.Cut ? CutApproachFraction(first) : 1f,
-                secondKind == AttackKind.Cut ? CutApproachFraction(second) : 1f);
+            float until = Mathf.Min(CutApproachFraction(first), CutApproachFraction(second));
             if (from > until) return false;
             int samples = Mathf.CeilToInt((until - from) * steps);
             for (int i = 0; i <= samples; i++)

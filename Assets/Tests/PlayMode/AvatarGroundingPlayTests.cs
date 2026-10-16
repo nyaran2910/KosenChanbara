@@ -47,6 +47,95 @@ public sealed class AvatarGroundingPlayTests
     }
 
     [UnityTest]
+    public IEnumerator WalkingAndAttackerAdvanceVisiblyAlternateFeetAcrossTheWholeRoster()
+    {
+        object presentation = Field<object>(master, "presentation");
+        int count = (int)master.GetType().GetProperty("CharacterCount").GetValue(master);
+        for (int character = 0; character < count; character++)
+        {
+            Invoke(master, "SetCharacter", 0, character);
+            object avatar = Field<Array>(presentation, "avatars").GetValue(0);
+            Transform player = Field<Transform>(avatar, "player");
+            Vector3 origin = player.position;
+            Assert.That(Field<Transform>(avatar, "sword").Find("ChambaraGripGlove"), Is.Null);
+            foreach (int fps in new[] { 30, 60, 144 })
+                foreach (bool fast in new[] { false, true })
+                {
+                    player.position = origin; Invoke(avatar, "Reset");
+                    Array legs = Field<Array>(avatar, "legs");
+                    float ground = Field<Transform>(legs.GetValue(0), "Ankle").position.y;
+                    float[] lift = new float[2]; bool[] moved = new bool[2];
+                    int landings = 0;
+                    // The attacker has no stagger: movement alone must drive
+                    // a readable gait, including the fast shared combat push.
+                    for (int frame = 0; frame < fps * 2; frame++)
+                    {
+                        float now = frame / (float)fps;
+                        float distance = fast ? 3f * CombatAdvance.Blend(now, CombatAdvance.Duration(3f))
+                            : Mathf.Min(now, 1f) * 2f;
+                        player.position = origin + player.forward * distance;
+                        Invoke(avatar, "Tick", (double)now, 1f / fps, Quaternion.Euler(-90f, 0f, 0f), false, 0f);
+                        int inAir = 0;
+                        for (int i = 0; i < 2; i++)
+                        {
+                            object leg = legs.GetValue(i);
+                            if (Field<bool>(leg, "Moving")) { moved[i] = true; inAir++; }
+                            lift[i] = Mathf.Max(lift[i], Field<Transform>(leg, "Ankle").position.y - ground);
+                            Assert.That(Vector3.Distance(Field<Transform>(leg, "Ankle").position, Field<Vector3>(leg, "WorldPlant")),
+                                Is.LessThan(.006f), $"Character {character}, {fps}fps, fast={fast}, frame {frame}: the actual foot must reach its animated contact without a stretched/floating leg. hip={Field<Transform>(leg, "Upper").position}, target={Field<Vector3>(leg, "WorldPlant")}, lengths={Field<float>(leg, "UpperLength")}/{Field<float>(leg, "LowerLength")}, moving={Field<bool>(leg, "Moving")}");
+                        }
+                        Assert.That(inAir, Is.LessThanOrEqualTo(1));
+                        Assert.That(Vector3.Distance(Field<Vector3>(avatar, "renderedOrigin"), player.position), Is.LessThan(.001f));
+                        if ((bool)avatar.GetType().GetProperty("Stepped").GetValue(avatar)) landings++;
+                        if (character == 0 && fps == 60 && fast && (frame == 5 || frame == 13 || frame == 20 || frame == 28)
+                            && !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CHAMBARA_PREVIEW_DIR")))
+                        {
+                            yield return null;
+                            CaptureReaction(avatar, "attacker-step-" + frame);
+                        }
+                    }
+                    for (int i = 0; i < 2; i++)
+                    {
+                        Assert.That(moved[i], Is.True, $"Character {character}, {fps}fps, fast={fast}: both feet must participate.");
+                        Assert.That(lift[i], Is.GreaterThan(.05f), "The foot lift must be readable instead of sliding with the attacker.");
+                    }
+                    Assert.That(landings, Is.GreaterThanOrEqualTo(2));
+                    Assert.That(Field<int>(avatar, "movingLeg"), Is.EqualTo(-1));
+                }
+            player.position = origin;
+        }
+        yield return null;
+    }
+
+    [UnityTest]
+    public IEnumerator RepeatedFastPushesKeepTheVisibleRootWithTheCombatRoot()
+    {
+        Array avatars = Field<Array>(Field<object>(master, "presentation"), "avatars");
+        object avatar = avatars.GetValue(0);
+        Transform player = Field<Transform>(avatar, "player"), visual = Field<Transform>(avatar, "visual");
+        Vector3 initial = player.position;
+        Vector3 visualOffset = Field<Vector3>(avatar, "initialVisualPosition");
+        Invoke(avatar, "Reset");
+        for (int hit = 0; hit < 4; hit++)
+        {
+            Vector3 start = player.position;
+            for (int frame = 1; frame <= 8; frame++)
+            {
+                player.position = start + Vector3.back * (3f * Mathf.SmoothStep(0f, 1f, frame / 8f));
+                Invoke(avatar, "Tick", hit * .14 + frame / 60d, 1f / 60f,
+                    Quaternion.Euler(-90f, 0f, 0f), false, 0f);
+                Vector3 expected = player.TransformPoint(visualOffset)
+                    + Field<Vector3>(avatar, "renderedOrigin") - player.position;
+                Assert.That(Vector3.Distance(Field<Vector3>(avatar, "renderedOrigin"), player.position), Is.LessThan(.001f));
+                Assert.That(Vector3.Distance(visual.position, expected), Is.LessThanOrEqualTo(.1201f),
+                    "The visible fighter must remain beside its combat root during repeated hits.");
+            }
+        }
+        Assert.That(Vector3.Distance(player.position, initial), Is.GreaterThan(11.9f));
+        yield return null;
+    }
+
+    [UnityTest]
     public IEnumerator KnockbackAndTurningKeepWorldContactsAndAlternateRecoverySteps()
     {
         Array avatars = Field<Array>(Field<object>(master, "presentation"), "avatars");
@@ -65,16 +154,25 @@ public sealed class AvatarGroundingPlayTests
                     var result = new CombatResult(CombatOutcome.Hit, 1 - playerIndex, playerIndex, 3f);
                     Invoke(avatar, "React", result, playerIndex, 0.0, direction * 3f);
                     int contacts = 0, plantedFrames = 0, liftedFrames = 0;
+                    Vector3 previousPlayerPosition = origin;
                     for (int frame = 0; frame < fps * 2; frame++)
                     {
                         float time = frame / (float)fps;
                         float push = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01((time - result.HitStopSeconds) / DuelMatch.PushSeconds));
                         player.position = origin + direction * (3f * push);
+                        Vector3 rootDelta = player.position - previousPlayerPosition;
+                        float rootSpeed = rootDelta.magnitude * fps;
+                        previousPlayerPosition = player.position;
                         player.rotation = rotation * Quaternion.Euler(0f, 20f * push, 0f);
                         Vector3[] before = new Vector3[2]; bool[] wasMoving = new bool[2];
                         for (int i = 0; i < 2; i++)
                         { before[i] = Field<Vector3>(legs.GetValue(i), "WorldPlant"); wasMoving[i] = Field<bool>(legs.GetValue(i), "Moving"); }
                         Invoke(avatar, "Tick", (double)time, 1f / fps, Quaternion.Euler(-90f, 0f, 0f), false, 0f);
+                        Transform visual = Field<Transform>(avatar, "visual");
+                        Vector3 visualBase = player.TransformPoint(Field<Vector3>(avatar, "initialVisualPosition"))
+                            + Field<Vector3>(avatar, "renderedOrigin") - player.position;
+                        Assert.That(Vector3.Distance(visual.position, visualBase), Is.LessThanOrEqualTo(.1201f),
+                            "Pelvis correction must stay close to the hitbox through a fast push at " + fps + " FPS");
                         int moving = 0;
                         for (int i = 0; i < 2; i++)
                         {
@@ -84,8 +182,11 @@ public sealed class AvatarGroundingPlayTests
                             else if (!wasMoving[i])
                             {
                                 plantedFrames++;
-                                Assert.That(Vector3.Distance(Field<Vector3>(leg, "WorldPlant"), before[i]), Is.LessThan(0.00001f), "Contact anchor followed the combat origin");
-                                Assert.That(Vector3.Distance(Field<Transform>(leg, "Ankle").position, before[i]), Is.LessThan(0.003f), "Supporting sole slid outside its world contact at " + fps + " FPS");
+                                Vector3 expectedPlant = before[i] + (rootSpeed > 12f ? rootDelta : Vector3.zero);
+                                Assert.That(Vector3.Distance(Field<Vector3>(leg, "WorldPlant"), expectedPlant), Is.LessThan(0.00001f),
+                                    "Only a fast recoil may carry the contact anchor with the combat root");
+                                if (rootSpeed <= 12f)
+                                    Assert.That(Vector3.Distance(Field<Transform>(leg, "Ankle").position, before[i]), Is.LessThan(0.003f), "Ordinary support slid outside its world contact at " + fps + " FPS");
                             }
                             Assert.That(Field<Transform>(leg, "Ankle").position.y, Is.GreaterThanOrEqualTo(ground - 0.003f), "Foot penetrated the floor");
                             Vector3 hip = Field<Transform>(leg, "Upper").position;
@@ -223,12 +324,16 @@ public sealed class AvatarGroundingPlayTests
                 Assert.That(Field<double>(avatars.GetValue(1 - playerIndex), "guardRecoilStart"), Is.LessThan(0), "The defender kept their balance");
                 float greatestChestLean = 0f, greatestArmReach = 0f, greatestSwordLean = 0f;
                 bool recoveryStep = false;
+                Vector3 previousPlayerPosition = origin;
                 for (int frame = 0; frame < fps * 2; frame++)
                 {
                     double time = frame / (double)fps;
                     float push = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(((float)time - result.HitStopSeconds) / DuelMatch.PushSeconds));
                     Vector3 suppliedOrigin = origin + pushDirection * (DuelMatch.GuardPush * push);
                     player.position = suppliedOrigin;
+                    Vector3 rootDelta = suppliedOrigin - previousPlayerPosition;
+                    float rootSpeed = rootDelta.magnitude * fps;
+                    previousPlayerPosition = suppliedOrigin;
                     Vector3[] supports = legs.Cast<object>().Select(leg => Field<Vector3>(leg, "WorldPlant")).ToArray();
                     bool[] wasMoving = legs.Cast<object>().Select(leg => Field<bool>(leg, "Moving")).ToArray();
                     SwordPose swordPose = PoseReactionSword(avatar, Quaternion.identity, time);
@@ -255,7 +360,13 @@ public sealed class AvatarGroundingPlayTests
                         object leg = legs.GetValue(i);
                         if (Field<bool>(leg, "Moving")) { moving++; recoveryStep = true; }
                         else if (!wasMoving[i])
-                            Assert.That(Vector3.Distance(Field<Transform>(leg, "Ankle").position, supports[i]), Is.LessThan(.003f), "Guard recoil slid the supporting sole");
+                        {
+                            Vector3 expectedSupport = supports[i] + (rootSpeed > 12f ? rootDelta : Vector3.zero);
+                            Assert.That(Vector3.Distance(Field<Vector3>(leg, "WorldPlant"), expectedSupport), Is.LessThan(.00001f),
+                                "Only fast recoil may carry a planted contact");
+                            Assert.That(Vector3.Distance(Field<Transform>(leg, "Ankle").position, expectedSupport), Is.LessThan(.003f),
+                                "Guard recoil foot must stay at its coherent contact");
+                        }
                         Assert.That(Field<Transform>(leg, "Ankle").position.y, Is.GreaterThanOrEqualTo(floor - .003f));
                     }
                     Assert.That(moving, Is.LessThanOrEqualTo(1));
@@ -278,74 +389,6 @@ public sealed class AvatarGroundingPlayTests
                     Assert.That(Quaternion.Angle(neutralArms[armIndex], Field<Transform>(arms.GetValue(armIndex), "Upper").localRotation), Is.LessThan(.1f), "The arm pose must settle without accumulating rotations");
             }
             player.position = origin; Invoke(avatar, "Reset");
-        }
-        yield return null;
-    }
-
-    [UnityTest]
-    public IEnumerator BlockedThrustAndSlashShareTheSameBodySwordAndRecoveryMotion()
-    {
-        object presentation = Field<object>(master, "presentation"), effects = Field<object>(presentation, "effects");
-        Array avatars = Field<Array>(presentation, "avatars");
-        MethodInfo play = presentation.GetType().GetMethod("Play", new[] { typeof(CombatResult), typeof(double), typeof(Vector3), typeof(Vector3) });
-        const int frames = 37;
-        for (int playerIndex = 0; playerIndex < 2; playerIndex++)
-        {
-            object avatar = avatars.GetValue(playerIndex);
-            Transform player = Field<Transform>(avatar, "player"), chest = Field<Transform>(avatar, "chest");
-            Transform[] bones = Field<Transform[]>(avatar, "bones");
-            Vector3 origin = player.position;
-            var slashPositions = new Vector3[frames][];
-            var slashRotations = new Quaternion[frames][];
-            var slashSword = new SwordPose[frames];
-            foreach (AttackKind kind in new[] { AttackKind.Cut, AttackKind.Thrust })
-            {
-                player.position = origin;
-                foreach (object character in avatars) Invoke(character, "Reset");
-                Invoke(effects, "ResetEffects");
-                Invoke(avatar, "Tick", -.01, 1f / 60f, Quaternion.identity, false, 0f);
-                Quaternion neutralChest = chest.localRotation;
-                PoseReactionSword(avatar, Quaternion.identity, -.01);
-                // A thrust may still have a pending lunge when it meets the
-                // guard. Blocking cancels it before using the common recoil.
-                if (kind == AttackKind.Thrust)
-                    Invoke(avatar, "Thrust", player.forward, -.01, ThrustPose.DurationSeconds);
-                var result = new CombatResult(CombatOutcome.GuardSuccess, playerIndex, playerIndex, -DuelMatch.GuardPush, kind);
-                Vector3 displacement = -player.forward * DuelMatch.GuardPush;
-                play.Invoke(presentation, new object[] { result, 0.0, displacement, player.forward });
-                Assert.That(Field<double>(avatar, "thrustStart"), Is.LessThan(-99), "A blocked thrust must stop its lunge rather than resume it after the recoil.");
-                float greatestLean = 0f;
-                for (int frame = 0; frame < frames; frame++)
-                {
-                    double now = frame / 60d;
-                    float travel = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01((float)(now - result.HitStopSeconds) / DuelMatch.PushSeconds));
-                    player.position = origin + displacement * travel;
-                    Quaternion input = now < .1 ? Quaternion.identity : Quaternion.Euler(-20f, 35f, 10f);
-                    SwordPose sword = PoseReactionSword(avatar, input, now);
-                    Invoke(avatar, "Tick", now, 1f / 60f, input, false, 0f);
-                    greatestLean = Mathf.Max(greatestLean, Quaternion.Angle(neutralChest, chest.localRotation));
-                    if (kind == AttackKind.Cut)
-                    {
-                        slashSword[frame] = sword;
-                        slashPositions[frame] = bones.Select(bone => bone.localPosition).ToArray();
-                        slashRotations[frame] = bones.Select(bone => bone.localRotation).ToArray();
-                    }
-                    else
-                    {
-                        Assert.That(Vector3.Distance(sword.Position, slashSword[frame].Position), Is.LessThan(.0001f), "Thrust and slash blocks must move the visible grip identically.");
-                        Assert.That(Quaternion.Angle(sword.Rotation, slashSword[frame].Rotation), Is.LessThan(.06f));
-                        for (int bone = 0; bone < bones.Length; bone++)
-                        {
-                            Assert.That(Vector3.Distance(bones[bone].localPosition, slashPositions[frame][bone]), Is.LessThan(.0001f));
-                            Assert.That(Quaternion.Angle(bones[bone].localRotation, slashRotations[frame][bone]), Is.LessThan(.06f),
-                                "Thrust and slash blocks must share the upper-body and planted-foot recovery.");
-                        }
-                    }
-                }
-                Assert.That(greatestLean, Is.GreaterThan(30f), "Both blocked attacks must visibly lose balance.");
-            }
-            player.position = origin;
-            Invoke(avatar, "Reset");
         }
         yield return null;
     }
@@ -430,9 +473,9 @@ public sealed class AvatarGroundingPlayTests
                         Assert.That(Quaternion.Angle(captured.Rotation, visible.Rotation), Is.LessThan(.06f));
                         Assert.That(roll, Is.EqualTo(0f));
                     }
-                    if (guard && now < stop + CombatReaction.RecoverySeconds)
+                    if (guard && now >= .15d + GuardPoseTransition.DurationSeconds && now < stop + CombatReaction.RecoverySeconds)
                     {
-                        Assert.That(Vector3.Angle(target.Direction, visible.Direction), Is.LessThan(15f), "A recovering guard must show its defence direction in the first guarded frame.");
+                        Assert.That(Vector3.Angle(target.Direction, visible.Direction), Is.LessThan(15f), "A recovering guard must show its defence direction after the shared smooth transition.");
                     }
                     Vector3 reactionDirection = blocked ? (-Vector3.forward + Vector3.right).normalized : Vector3.right;
                     if (now >= .27d && ReactionSwordPose.Sample(reactionDirection, (float)now - stop,
@@ -451,7 +494,7 @@ public sealed class AvatarGroundingPlayTests
     }
 
     [UnityTest]
-    public IEnumerator GuardAppearsImmediatelyDuringHitStopWithoutCancellingBodyRecovery()
+    public IEnumerator GuardAfterAHitOrBlockedAttackBlendsFromTheVisibleSwordWithoutCancellingBodyRecovery()
     {
         object presentation = Field<object>(master, "presentation");
         foreach (object avatar in Field<Array>(presentation, "avatars"))
@@ -472,19 +515,25 @@ public sealed class AvatarGroundingPlayTests
                     true, new SwordPoseSettings(Field<Vector3>(avatar, "restChest")), ref remembered);
                 MethodInfo pose = avatar.GetType().GetMethod("PoseSword", new[] { typeof(SwordPose), typeof(double), typeof(bool) });
                 SwordPose immediate = (SwordPose)pose.Invoke(avatar, new object[] { defence, .01d, true });
-                Assert.That(Vector3.Distance(immediate.Position, defence.Position), Is.LessThan(.00001f));
-                Assert.That(Quaternion.Angle(immediate.Rotation, defence.Rotation), Is.LessThan(.06f), "Guard input must not wait for hit stop or a presentation blend.");
-                Assert.That(Quaternion.Angle(immediate.Rotation, captured.Rotation), Is.GreaterThan(45f));
-                Assert.That(chest.localRotation, Is.EqualTo(restChest), "Displaying a guard during hit stop must leave the body frozen.");
-                SwordPose unguarded = (SwordPose)pose.Invoke(avatar, new object[] { defence, .012d, false });
-                Assert.That(Vector3.Distance(unguarded.Position, captured.Position), Is.LessThan(.000001f));
-                Assert.That(Quaternion.Angle(unguarded.Rotation, captured.Rotation), Is.LessThan(.06f), "Without a guard, the struck sword keeps its frozen pose.");
+                Assert.That(Vector3.Distance(immediate.Position, captured.Position), Is.LessThan(.00001f));
+                Assert.That(Quaternion.Angle(immediate.Rotation, captured.Rotation), Is.LessThan(.06f),
+                    "Pressing guard must start at the struck sword, not teleport to the guard target.");
+                Assert.That(chest.localRotation, Is.EqualTo(restChest));
+                SwordPose previous = immediate;
+                for (int frame = 1; frame <= 9; frame++)
+                {
+                    double time = .01d + frame / 60d;
+                    SwordPose blending = (SwordPose)pose.Invoke(avatar, new object[] { defence, time, true });
+                    Assert.That(Vector3.Distance(previous.Position, blending.Position), Is.LessThan(.5f));
+                    Assert.That(Quaternion.Angle(previous.Rotation, blending.Rotation), Is.LessThan(35f));
+                    previous = blending;
+                }
                 double peak = stop + CombatReaction.RecoverySeconds * (blocked ? .5d : .16d);
                 SwordPose recovering = (SwordPose)pose.Invoke(avatar, new object[] { defence, peak, true });
                 sword.SetLocalPositionAndRotation(recovering.Position, recovering.Rotation);
                 Invoke(avatar, "Tick", peak, 1f / 60f, Quaternion.identity, true, 0f);
                 Assert.That(Vector3.Angle(defence.Direction, recovering.Direction), Is.LessThan(15f));
-                Assert.That(Quaternion.Angle(restChest, chest.localRotation), Is.GreaterThan(25f), "Immediate defence must retain the body recoil.");
+                Assert.That(Quaternion.Angle(restChest, chest.localRotation), Is.GreaterThan(25f), "Blended defence must retain the body recoil.");
                 AssertRecoveryGrip(avatar);
                 Assert.That(player.position, Is.EqualTo(origin));
                 double recoveredAt = stop + CombatReaction.RecoverySeconds + .001d;
@@ -557,121 +606,6 @@ public sealed class AvatarGroundingPlayTests
     }
 
     [UnityTest]
-    public IEnumerator ThrustCueFollowsItsTipFreezesDuringHitStopAndCancelsOnRecoil()
-    {
-        object presentation = Field<object>(master, "presentation"), effects = Field<object>(presentation, "effects");
-        object avatar = Field<Array>(presentation, "avatars").GetValue(0);
-        Transform player = Field<Transform>(avatar, "player"), sword = Field<Transform>(avatar, "sword");
-        Invoke(presentation, "ResetEffects");
-        PoseReactionSword(avatar, Quaternion.identity, 0d);
-        Vector3 direction = sword.forward;
-        Invoke(presentation, "ThrustCharacter", 0, direction, 0d, ThrustPose.DurationSeconds);
-        Assert.That((int)effects.GetType().GetProperty("ActiveThrustCount").GetValue(effects), Is.EqualTo(1));
-        object stroke = Field<Array>(effects, "thrustStrokes").Cast<object>().Single(item => Field<bool>(item, "Active"));
-        Assert.That(Field<Array>(effects, "thrustStrokes").Length, Is.EqualTo(4), "A clearer cue must keep the existing fixed pool.");
-        Mesh mesh = Field<Mesh>(stroke, "Mesh");
-        Invoke(effects, "Tick", .01d, false);
-        Assert.That(mesh.vertexCount, Is.EqualTo(0), "The cue starts with the drive rather than the chamber.");
-        Invoke(effects, "Tick", .065d, false);
-        Vector3 tip = sword.position + direction * CombatContact.BladeLength;
-        Vector3[] vertices = mesh.vertices;
-        Assert.That(vertices.Max(vertex => Vector3.Dot(vertex - tip, direction))
-            - vertices.Min(vertex => Vector3.Dot(vertex - tip, direction)), Is.GreaterThan(.65f), "Straight speed lines must visibly extend along the thrust.");
-        foreach (float alongBlade in new[] { .65f, 1.12f, CombatContact.BladeLength - .14f })
-        {
-            Vector3[] ring = vertices.Where(vertex => Mathf.Abs(Vector3.Dot(vertex - sword.position, direction) - alongBlade) < .001f).ToArray();
-            Assert.That(ring.Length, Is.GreaterThan(0), "The blade needs a visible ring at its base, middle and tip.");
-            float outer = ring.Max(vertex => Vector3.ProjectOnPlane(vertex - sword.position, direction).magnitude);
-            float inner = ring.Min(vertex => Vector3.ProjectOnPlane(vertex - sword.position, direction).magnitude);
-            Assert.That(outer, Is.GreaterThan(.35f), "The own-view ring must extend around the opponent instead of disappearing behind their body.");
-            Assert.That(outer - inner, Is.GreaterThan(.065f), "The ring needs enough line width to remain visible from the player's camera.");
-        }
-        int geometryCount = mesh.vertexCount;
-        Vector3 center = mesh.bounds.center;
-        Vector3 translation = player.right * .3f;
-        sword.position += translation;
-        Invoke(effects, "Tick", .065d, false);
-        Assert.That(Vector3.Distance(mesh.bounds.center, center + translation), Is.LessThan(.00001f), "The cue must travel with the sword tip.");
-        Vector3 frozen = mesh.bounds.center;
-        sword.position += translation;
-        Invoke(effects, "Tick", .08d, true);
-        Assert.That(mesh.bounds.center, Is.EqualTo(frozen));
-        Invoke(presentation, "GuardRecoilCharacter", 0, -player.forward, .08d, DuelMatch.GuardStopSeconds);
-        Assert.That((int)effects.GetType().GetProperty("ActiveThrustCount").GetValue(effects), Is.EqualTo(0), "A blocked thrust must not keep emitting its drive cue.");
-        Invoke(presentation, "ThrustCharacter", 0, direction, 1d, ThrustPose.DurationSeconds);
-        Invoke(effects, "Tick", 1.09d, false);
-        object nextStroke = Field<Array>(effects, "thrustStrokes").Cast<object>().Single(item => Field<bool>(item, "Active"));
-        Assert.That(Field<Mesh>(nextStroke, "Mesh").vertexCount, Is.EqualTo(geometryCount), "Repeated thrusts use the same fixed geometry count.");
-        Invoke(effects, "Tick", 1.3d, false);
-        Assert.That((int)effects.GetType().GetProperty("ActiveThrustCount").GetValue(effects), Is.EqualTo(0));
-        Invoke(presentation, "ThrustCharacter", 0, direction, 2d, ThrustPose.DurationSeconds);
-        Invoke(effects, "ResetEffects");
-        Assert.That((int)effects.GetType().GetProperty("ActiveThrustCount").GetValue(effects), Is.EqualTo(0));
-        yield return null;
-    }
-
-    [UnityTest]
-    public IEnumerator ThrustUsesAForwardBodyLungeAndReturnsToItsPlantedStance()
-    {
-        object presentation = Field<object>(master, "presentation");
-        foreach (object avatar in Field<Array>(presentation, "avatars"))
-        {
-            Invoke(avatar, "Reset");
-            Transform player = Field<Transform>(avatar, "player"); Vector3 origin = player.position;
-            Array legs = Field<Array>(avatar, "legs");
-            Invoke(avatar, "Tick", 0.0, 1f / 60f, Quaternion.identity, false, 0f);
-            Vector3 restChest = (Vector3)avatar.GetType().GetProperty("ChestOffset").GetValue(avatar);
-            bool preview = avatar == Field<Array>(presentation, "avatars").GetValue(0)
-                && !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CHAMBARA_PREVIEW_DIR"));
-            object playerSword = preview ? Field<object>(master, "first") : null;
-            Transform sword = preview ? Field<Transform>(playerSword, "Sword") : null;
-            Vector3 savedGrip = preview ? sword.localPosition : Vector3.zero;
-            Quaternion savedRotation = preview ? sword.localRotation : Quaternion.identity;
-            if (preview)
-            {
-                PosePreviewThrust(playerSword, sword, -1f);
-                yield return null;
-                CaptureReaction(avatar, "thrust-rest", sword);
-            }
-            Invoke(avatar, "Thrust", player.forward, .01, ThrustPose.DurationSeconds);
-            float greatestAdvance = 0f; bool stepped = false;
-            for (int frame = 1; frame < 90; frame++)
-            {
-                Vector3[] supports = legs.Cast<object>().Select(leg => Field<Vector3>(leg, "WorldPlant")).ToArray();
-                bool[] wasMoving = legs.Cast<object>().Select(leg => Field<bool>(leg, "Moving")).ToArray();
-                Invoke(avatar, "Tick", frame / 60.0, 1f / 60f, Quaternion.identity, false, 0f);
-                if (preview)
-                {
-                    PosePreviewThrust(playerSword, sword, frame / 60f - .01f);
-                    if (frame == 2 || frame == 6 || frame == 14)
-                    {
-                        yield return null;
-                        CaptureReaction(avatar, frame == 2 ? "thrust-chamber" : frame == 6 ? "thrust-drive" : "thrust-return", sword);
-                    }
-                }
-                if (frame == 1) Assert.That((bool)avatar.GetType().GetProperty("Swung").GetValue(avatar), Is.True);
-                greatestAdvance = Mathf.Max(greatestAdvance, ((Vector3)avatar.GetType().GetProperty("ChestOffset").GetValue(avatar)).z - restChest.z);
-                int moving = 0;
-                for (int i = 0; i < legs.Length; i++)
-                {
-                    object leg = legs.GetValue(i);
-                    if (Field<bool>(leg, "Moving")) { moving++; stepped = true; }
-                    else if (!wasMoving[i])
-                        Assert.That(Vector3.Distance(Field<Transform>(leg, "Ankle").position, supports[i]), Is.LessThan(.003f));
-                }
-                Assert.That(moving, Is.LessThanOrEqualTo(1));
-                Assert.That(player.position, Is.EqualTo(origin));
-            }
-            Assert.That(greatestAdvance, Is.GreaterThan(.08f));
-            Assert.That(stepped, Is.True);
-            Assert.That(Field<int>(avatar, "movingLeg"), Is.EqualTo(-1));
-            Assert.That(Vector3.Distance(Field<Vector3>(avatar, "renderedOrigin"), origin), Is.LessThan(.001f));
-            if (preview) sword.SetLocalPositionAndRotation(savedGrip, savedRotation);
-        }
-        yield return null;
-    }
-
-    [UnityTest]
     public IEnumerator SidewaysSwordMotionDoesNotTriggerAForwardStep()
     {
         Array avatars = Field<Array>(Field<object>(master, "presentation"), "avatars");
@@ -724,7 +658,7 @@ public sealed class AvatarGroundingPlayTests
     }
 
     [UnityTest]
-    public IEnumerator TwoSphericalHandsMatchEveryCharacterColorAndRearBladeClearsTheActualHead()
+    public IEnumerator EveryCharacterHasNoGripGlovesAndRearBladeClearsTheActualHead()
     {
         object presentation = Field<object>(master, "presentation");
         for (int character = 0; character < 4; character++)
@@ -735,29 +669,7 @@ public sealed class AvatarGroundingPlayTests
                 Invoke(avatar, "Reset");
                 Transform player = Field<Transform>(avatar, "player"), visual = Field<Transform>(avatar, "visual");
                 Transform sword = Field<Transform[]>(presentation, "swords")[0];
-                Transform glove = sword.Find("ChambaraGripGlove");
-                Assert.That(glove, Is.Not.Null, "Missing grip glove");
-                Material armor = visual.GetComponentsInChildren<Renderer>().SelectMany(r => r.sharedMaterials)
-                    .First(m => m != null && m.name.StartsWith("Armor_") && !m.name.StartsWith("Armor_seams"));
-                Renderer[] hands = glove.GetComponentsInChildren<Renderer>();
-                Assert.That(hands.Length, Is.EqualTo(2), "The grip has exactly two simple hands.");
-                foreach (Renderer part in hands)
-                {
-                    Assert.That(part.sharedMaterial, Is.SameAs(armor));
-                    Assert.That(part.transform.localScale, Is.EqualTo(Vector3.one * .23f), "Each hand is spherical.");
-                    Bounds shape = part.GetComponent<MeshFilter>().sharedMesh.bounds;
-                    Assert.That(shape.size.x, Is.EqualTo(shape.size.y).Within(.00001f));
-                    Assert.That(shape.size.z, Is.EqualTo(shape.size.y).Within(.00001f));
-                }
-                Assert.That(hands[0].transform.localPosition, Is.EqualTo(new Vector3(0, 0, .125f)));
-                Assert.That(hands[1].transform.localPosition, Is.EqualTo(new Vector3(0, 0, -.125f)));
-                Assert.That(glove.GetComponentsInChildren<Collider>().Length, Is.Zero);
-                foreach (Quaternion rotation in new[] { Quaternion.Euler(-90, 0, 0), Quaternion.Euler(0, 90, 0), Quaternion.Euler(30, 180, 0) })
-                {
-                    sword.localRotation = rotation;
-                    foreach (Renderer hand in hands)
-                        Assert.That(Vector3.Distance(hand.transform.position, sword.TransformPoint(hand.transform.localPosition)), Is.LessThan(.00001f), "Both hands must follow the grip through every sword pose.");
-                }
+                Assert.That(sword.Find("ChambaraGripGlove"), Is.Null, "Grip gloves are disabled for every character and weapon.");
                 float headTop = MeshBounds(visual).max.y - player.position.y;
                 Vector3 chest = Field<Vector3[]>(master, "characterChestCenters")[character];
                 foreach (float pitch in new[] { -45f, -60f })
@@ -916,17 +828,6 @@ public sealed class AvatarGroundingPlayTests
             Assert.That(Vector3.Distance(upper.position, lower.position), Is.EqualTo(upperLength).Within(.003f), "Recovery must not stretch the upper arm.");
             Assert.That(Vector3.Distance(lower.position, wrist.position), Is.EqualTo(lowerLength).Within(.003f), "Recovery must not stretch the forearm.");
         }
-    }
-
-    private void PosePreviewThrust(object playerSword, Transform sword, float age)
-    {
-        Vector3 chest = (Vector3)master.GetType().GetMethod("PlayerChestCenter", Fields).Invoke(master, new[] { playerSword });
-        Vector3 remembered = Vector3.up;
-        SwordPose pose = SwordPoseMath.Calculate(Quaternion.identity, false,
-            new SwordPoseSettings(chest, Field<float>(master, "gripRadius"), Field<float>(master, "guardRadius"),
-                Field<float>(master, "guardPlaneOffset"), Field<float>(master, "guardHeight")), ref remembered);
-        pose = ThrustPose.Apply(pose, age);
-        sword.SetLocalPositionAndRotation(pose.Position, pose.Rotation);
     }
 
     private static void CaptureReaction(object avatar, string name, Transform sword = null)

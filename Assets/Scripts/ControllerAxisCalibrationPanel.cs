@@ -6,10 +6,10 @@ using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
 using UnityEngine.UI;
 
-// Axis presets live separately from the basic pause actions.
+// Diagnostics use the same calibrated sword frame as gameplay.
 public sealed class ControllerAxisCalibrationPanel : MonoBehaviour
 {
-    public enum Step { Player, Presets }
+    public enum Step { Player, Diagnostics }
     public bool IsOpen => canvas != null && canvas.activeSelf;
     public Step CurrentStep { get; private set; }
     public Button EntryButton { get; private set; }
@@ -18,8 +18,7 @@ public sealed class ControllerAxisCalibrationPanel : MonoBehaviour
     private GameFlowController flow;
     private GameObject entryCanvas;
     private double entryAfter;
-    private bool SetupEntryVisible => flow != null && flow.PauseOpen
-        && flow.CurrentScreen != GameFlowController.Screen.Preview;
+    private bool SetupEntryVisible => false; // Registration now owns the Esc settings entry.
     private GameObject canvas, page;
     private Font font;
     private Text instruction, feedback;
@@ -28,8 +27,7 @@ public sealed class ControllerAxisCalibrationPanel : MonoBehaviour
     private readonly bool[] guardWasHeld = new bool[2];
     private readonly MenuResetButton reset = new MenuResetButton();
     private readonly AxisDirectionMonitor preview = new AxisDirectionMonitor();
-    private readonly List<Button> presetButtons = new List<Button>();
-    public int CurrentPreset => sensors[player].AxisMapping.PresetIndex;
+    private readonly List<Button> diagnosticButtons = new List<Button>();
     private readonly MenuGestureNavigation[] navigation = { new MenuGestureNavigation(), new MenuGestureNavigation() };
     private int player, session;
     private ControllerInputSource source;
@@ -40,7 +38,7 @@ public sealed class ControllerAxisCalibrationPanel : MonoBehaviour
     public void Initialize(MotionController[] controllers, Font japaneseFont, Action onClosed)
     {
         sensors = controllers; font = japaneseFont; closed = onClosed;
-        canvas = new GameObject("Controller axis calibration", typeof(RectTransform), typeof(Canvas),
+        canvas = new GameObject("Controller input direction check", typeof(RectTransform), typeof(Canvas),
             typeof(CanvasScaler), typeof(GraphicRaycaster));
         canvas.transform.SetParent(transform, false);
         Canvas c = canvas.GetComponent<Canvas>(); c.renderMode = RenderMode.ScreenSpaceOverlay; c.sortingOrder = 1220;
@@ -62,7 +60,7 @@ public sealed class ControllerAxisCalibrationPanel : MonoBehaviour
         CanvasScaler scaler = entryCanvas.GetComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
         scaler.referenceResolution = new Vector2(1920, 1080); scaler.matchWidthOrHeight = .5f;
-        GameObject go = new GameObject("軸合わせ", typeof(RectTransform), typeof(Image), typeof(Button));
+        GameObject go = new GameObject("入力確認", typeof(RectTransform), typeof(Image), typeof(Button));
         go.transform.SetParent(entryCanvas.transform, false);
         RectTransform rect = go.GetComponent<RectTransform>(); rect.anchorMin = rect.anchorMax = rect.pivot = Vector2.zero;
         rect.anchoredPosition = new Vector2(60, 300); rect.sizeDelta = new Vector2(220, 55);
@@ -75,7 +73,7 @@ public sealed class ControllerAxisCalibrationPanel : MonoBehaviour
             flow.OpenAxisCalibration();
         });
         GameObject label = new GameObject("Label", typeof(RectTransform), typeof(Text)); label.transform.SetParent(go.transform, false);
-        Text text = label.GetComponent<Text>(); text.font = font; text.text = "軸合わせ"; text.fontSize = 24;
+        Text text = label.GetComponent<Text>(); text.font = font; text.text = "入力確認"; text.fontSize = 24;
         text.color = Ink; text.alignment = TextAnchor.MiddleCenter; text.raycastTarget = false;
         RectTransform labelRect = text.rectTransform; labelRect.anchorMin = Vector2.zero; labelRect.anchorMax = Vector2.one;
         labelRect.offsetMin = labelRect.offsetMax = Vector2.zero;
@@ -150,18 +148,18 @@ public sealed class ControllerAxisCalibrationPanel : MonoBehaviour
                 if (keys.rightArrowKey.wasPressedThisFrame || keys.dKey.wasPressedThisFrame) move = Vector2Int.right;
                 confirm |= keys.enterKey.wasPressedThisFrame;
             }
-            // Direction feedback stays live while navigation takes one step
-            // per swing. Moving focus does not apply a different preset.
+            // The selected controller can inspect the live direction and
+            // move focus using the same device angular velocity.
             for (int i = 0; i < 2; i++)
             {
-                if (CurrentStep == Step.Presets && i != player) continue;
+            if (CurrentStep == Step.Diagnostics && i != player) continue;
                 MotionController sensor = sensors[i];
-                bool phone = false; Quaternion reference = Quaternion.identity; MotionSample sample = default;
+                MotionSample sample = default;
                 bool valid = sensor != null && sensor.IsPoseValid
-                    && sensor.TryGetMenuSample(out sample, out phone, out reference);
-                Vector2Int flick = navigation[i].Read(sample.Rotation, sample.AngularVelocityDegrees,
-                    sample.GyroscopeValid, valid, sample.GuardHeld, valid ? sensor.MenuPoseGeneration : -1,
-                    valid ? sample.BrowserTimestampMilliseconds / 1000d : double.NaN, phone, reference);
+                    && sensor.TryGetMenuSample(out sample);
+                Vector2Int flick = navigation[i].Read(sample.Rotation, sample.AngularVelocityDegrees, sample.GyroscopeValid, valid,
+                    sample.GuardHeld, valid ? sensor.PoseGeneration : -1,
+                    valid ? sample.BrowserTimestampMilliseconds / 1000d : double.NaN, sensor != null && sensor.ActiveSource == ControllerInputSource.Phone);
                 if (flick != Vector2Int.zero) move = flick;
             }
             if (move != Vector2Int.zero) Navigate(move);
@@ -194,67 +192,37 @@ public sealed class ControllerAxisCalibrationPanel : MonoBehaviour
     {
         if (index < 0 || index >= sensors.Length || !Fresh(sensors[index])) return;
         player = index; source = sensors[player].ActiveSource; session = sensors[player].InputSessionGeneration;
-        ShowPresets();
+        ShowDiagnostics();
     }
 
-    private void ShowPresets()
+    private void ShowDiagnostics()
     {
-        CurrentStep = Step.Presets;
+        CurrentStep = Step.Diagnostics;
         reset.Read(false, false, 0, 0);
         MotionController sensor = sensors[player];
         reset.Read(true, sensor.RecenterHeld, sensor.ResetCounter, Time.unscaledTime);
         preview.Reset();
         foreach (MenuGestureNavigation gesture in navigation) gesture.Reset();
-        Build(Heading(), "6つのメニュー軸を選んで、上下左右に振って試してください。\nゲーム中の剣の動きは変わりません。");
-        // Keep the live result above every preset on the same page.
+        Build(Heading(), "剣先が動いた方向を表示します。ゲーム中と同じ姿勢を使います。");
+        // Keep the live result above the diagnostic controls.
         Place(instruction.rectTransform, new Vector2(0, 195), new Vector2(1500, 110));
         feedback = Label("振った方向：待機", new Vector2(0, 300), new Vector2(1400, 80), 38);
-        presetButtons.Clear();
-        for (int i = 0; i < ControllerAxisMapping.PresetCount; i++)
-        {
-            int index = i;
-            presetButtons.Add(AddButton((i + 1) + "　" + ControllerAxisMapping.PresetName(i),
-                new Vector2(i % 2 == 0 ? -250 : 250, 40 - i / 2 * 110), () => SelectPreset(index)));
-        }
-        AddButton("P1 / P2を選び直す", new Vector2(-250, -350), () => ShowPlayers());
-        AddButton("もどる", new Vector2(250, -350), Close);
-        RefreshPresets();
-        presetButtons[CurrentPreset].Select();
-    }
-
-    public void SelectPreset(int index)
-    {
-        if (CurrentStep != Step.Presets || !SameInput() || !Fresh(sensors[player])
-            || index < 0 || index >= ControllerAxisMapping.PresetCount) return;
-        if (CurrentPreset == index) return;
-        MotionController sensor = sensors[player];
-        sensor.SetMenuAxisMapping(ControllerAxisMapping.FromPreset(index));
-        preview.Reset();
-        feedback.text = "振った方向：待機";
-        RefreshPresets();
-    }
-
-    private void RefreshPresets()
-    {
-        for (int i = 0; i < presetButtons.Count; i++)
-        {
-            bool selected = i == CurrentPreset;
-            presetButtons[i].image.color = selected ? new Color(.65f, .85f, 1f) : Pale;
-            presetButtons[i].GetComponentInChildren<Text>().text = (i + 1) + "　"
-                + ControllerAxisMapping.PresetName(i) + (selected ? "　✓" : "");
-        }
+        diagnosticButtons.Clear();
+        diagnosticButtons.Add(AddButton("正面合わせ", new Vector2(-300, 20), () =>
+        { sensor.Recenter(); preview.Reset(); feedback.text = "振った方向：入力を待っています…"; }));
+        diagnosticButtons.Add(AddButton("P1 / P2を選び直す", new Vector2(150, 20), () => ShowPlayers()));
+        AddButton("もどる", new Vector2(0, -350), Close);
+        SelectFirst();
     }
 
     private void TickPreview()
     {
         MotionController sensor = sensors[player];
-        MotionSample sample = default; bool phone = false; Quaternion reference = Quaternion.identity;
+        MotionSample sample = default;
         bool valid = Fresh(sensor) && sensor.IsPoseValid
-            && sensor.TryGetMenuSample(out sample, out phone, out reference);
-        Quaternion rotation = phone ? MenuGestureNavigation.PhoneWorldToMenuWorld * sample.Rotation
-            : Quaternion.Inverse(reference) * sample.Rotation;
-        Vector2Int direction = preview.Read(rotation, sample.AngularVelocityDegrees,
-            sample.GyroscopeValid, valid, valid ? sample.BrowserTimestampMilliseconds / 1000d : double.NaN);
+            && sensor.TryGetMenuSample(out sample);
+        Vector2Int direction = preview.Read(sample.Rotation, sample.AngularVelocityDegrees, sample.GyroscopeValid, valid,
+            valid ? sample.BrowserTimestampMilliseconds / 1000d : double.NaN, sensor != null && sensor.ActiveSource == ControllerInputSource.Phone);
         if (direction != Vector2Int.zero)
             feedback.text = "振った方向：" + (direction == Vector2Int.up ? "↑ 上" : direction == Vector2Int.down ? "↓ 下"
                 : direction == Vector2Int.left ? "← 左" : "→ 右");
@@ -268,14 +236,14 @@ public sealed class ControllerAxisCalibrationPanel : MonoBehaviour
     private static string SourceName(MotionController sensor) => sensor == null ? "未接続"
         : sensor.ActiveSource == ControllerInputSource.Phone ? "スマホ"
         : sensor.ActiveSource == ControllerInputSource.Hardware ? "コントローラ" : "未接続";
-    private string Heading() => "P" + (player + 1) + "　" + SourceName(sensors[player]) + "の軸合わせ";
+    private string Heading() => "P" + (player + 1) + "　" + SourceName(sensors[player]) + "の方向確認";
 
     private void Build(string heading, string message)
     {
         if (EventSystem.current != null) EventSystem.current.SetSelectedGameObject(null);
         if (page != null) { page.SetActive(false); Destroy(page); }
         buttons.Clear(); inputAfter = Time.realtimeSinceStartupAsDouble + .2;
-        page = new GameObject("Axis calibration page", typeof(RectTransform), typeof(Image));
+        page = new GameObject("Direction diagnostic page", typeof(RectTransform), typeof(Image));
         page.transform.SetParent(canvas.transform, false);
         RectTransform rect = page.GetComponent<RectTransform>();
         rect.anchorMin = Vector2.zero; rect.anchorMax = Vector2.one; rect.offsetMin = rect.offsetMax = Vector2.zero;

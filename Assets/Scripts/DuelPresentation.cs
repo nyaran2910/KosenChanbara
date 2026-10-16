@@ -164,6 +164,9 @@ public sealed partial class DuelPresentation : MonoBehaviour
             foreach (Material material in renderer.sharedMaterials)
                 if (material.name.StartsWith("Padded_sword"))
                 { effects.SetSwordColor(index, material.color); return; }
+        Renderer bladeRenderer = blade.GetComponentInChildren<Renderer>();
+        if (bladeRenderer != null && bladeRenderer.sharedMaterial != null)
+            effects.SetSwordColor(index, bladeRenderer.sharedMaterial.color);
     }
 
     public void SetStage(GameObject prefab, bool ringOutEnabled = true, bool baseballField = false, bool replacePlatform = false,
@@ -224,6 +227,8 @@ public sealed partial class DuelPresentation : MonoBehaviour
                 StaggerCharacter(i, worldCutDirection, now, CombatReaction.RecoverySeconds, result.HitStopSeconds);
             else if (i == result.PushedPlayer && result.Outcome == CombatOutcome.GuardSuccess)
                 GuardRecoilCharacter(i, displacement, now, result.HitStopSeconds);
+            else if (i == result.Attacker && CombatReaction.IsHit(result.Outcome))
+                AttackImpactCharacter(i, result, worldCutDirection, now);
             else avatars[i].React(result, i, now, displacement);
             views[i].Kick(now, sound == 0 || sound == 2 ? 1f : 0.65f);
         }
@@ -243,10 +248,15 @@ public sealed partial class DuelPresentation : MonoBehaviour
     public SwordPose PoseSword(int index, SwordPose pose, double now, bool guard = false)
         => avatars[index].PoseSword(pose, now, guard);
 
+    public void AttackImpactCharacter(int index, CombatResult result, Vector3 worldCutDirection, double now)
+    {
+        avatars[index].React(result, index, now, worldCutDirection);
+        views[index].AttackImpact(now, worldCutDirection, result.HitStopSeconds);
+    }
+
     public void StaggerCharacter(int index, Vector3 worldCutDirection, double now, float recoverySeconds, float hitStopSeconds = 0f)
     {
         avatars[index].Stagger(worldCutDirection, now, recoverySeconds, hitStopSeconds);
-        effects.CancelThrust(swords[index]);
         ShowStagger(avatars[index], now, recoverySeconds, hitStopSeconds);
     }
 
@@ -256,14 +266,7 @@ public sealed partial class DuelPresentation : MonoBehaviour
     public void GuardRecoilCharacter(int index, Vector3 worldPushDirection, double now, float hitStopSeconds = 0f)
     {
         avatars[index].GuardRecoil(worldPushDirection, now, hitStopSeconds);
-        effects.CancelThrust(swords[index]);
         ShowStagger(avatars[index], now, ReactionSwordPose.GuardDurationSeconds, hitStopSeconds);
-    }
-
-    public void ThrustCharacter(int index, Vector3 worldDirection, double now, float durationSeconds)
-    {
-        avatars[index].Thrust(worldDirection, now, durationSeconds);
-        effects.EmitThrust(swords[index], worldDirection, index, now);
     }
 
     public void PoseCharacterPreview(int index, double now, float dt, Quaternion rotation, bool guard, float speed)

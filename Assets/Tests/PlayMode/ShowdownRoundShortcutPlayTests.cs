@@ -125,15 +125,28 @@ public sealed class ShowdownRoundShortcutPlayTests
         Call(master,"MoveSingleNpcs",.01f);
         Vector3 advertised=Field<Vector3>(npc,"AttackReadyDirection");
         Assert.That(Vector3.Angle(advertised,Vector3.up),Is.LessThan(4.01f),"An overhead guard cannot announce a right-side cut without first preparing that side.");
-        Assert.That(Vector3.Angle(Field<SwordPose>(npc,"VisualBasePose").Direction,advertised),Is.LessThan(.02f));
+        Vector3 previousBlade=Field<SwordPose>(npc,"VisualBasePose").Direction;
+        Assert.That(Vector3.Angle(previousBlade,advertised),Is.LessThan(8f),"The announced lane is reached through a smooth preparation.");
         for(int frame=0;frame<50;frame++)
         {
             master.GetType().GetField("matchTime",Flags).SetValue(master,Field<double>(master,"matchTime")+.01d);
             Call(master,"MoveSingleNpcs",.01f);
             Vector3 ready=Field<Vector3>(npc,"AttackReadyDirection");
             Assert.That(Vector3.Angle(ready,advertised),Is.LessThan(4.01f));
-            Assert.That(Vector3.Angle(Field<SwordPose>(npc,"VisualBasePose").Direction,ready),Is.LessThan(.02f));
+            Vector3 blade=Field<SwordPose>(npc,"VisualBasePose").Direction;
+            Assert.That(Vector3.Angle(previousBlade,blade),Is.LessThan(8f),"Preparation advances continuously toward the announced lane.");
+            previousBlade=blade;
         }
+        Assert.That(Field<float>(npc,"AttackTimer"),Is.GreaterThan(Field<float>(npc,"SwingSeconds")),
+            "The normal first-wave windup is still in progress after these half-second samples; its visible blade may still be approaching the announced lane.");
+        for (int frame = 0; frame < 1200 && Field<float>(npc,"AttackTimer") > Field<float>(npc,"SwingSeconds") + .002f; frame++)
+        {
+            master.GetType().GetField("matchTime",Flags).SetValue(master,Field<double>(master,"matchTime")+.001d);
+            Call(master,"MoveSingleNpcs",.001f);
+        }
+        Vector3 preparedBlade = root.TransformDirection(Field<SwordPose>(npc,"VisualBasePose").Direction);
+        Assert.That(Vector3.Angle(preparedBlade,Field<Vector3>(npc,"AttackStart")),Is.LessThan(.5f),
+            "The visible blade reaches the actual committed start pose before the swing begins.");
         yield return null;
     }
 

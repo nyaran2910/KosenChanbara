@@ -75,7 +75,9 @@ public sealed class SingleDefeatPlayTests
         Assert.That(Field<bool>(view, "walkingView"), Is.True);
         Assert.That(Field<float>(npc, "AttackTimer"), Is.LessThan(0f));
         TickAt(3.6d);
-        Assert.That(Vector3.Distance(player.position, start - forward * DuelMatch.HitPush), Is.LessThan(.001f));
+        Assert.That(Vector3.Distance(player.position, Field<Vector3>(master, "singlePlayerPushTarget")), Is.LessThan(.001f));
+        Assert.That(Vector3.Dot(player.position - start, -forward), Is.EqualTo(DuelMatch.HitPush).Within(.001f),
+            "The fatal hit completes the shared push, including its actual cut-direction deflection.");
         Assert.That(Quaternion.Angle(standing, visual.localRotation), Is.GreaterThan(60f));
         TickAt(4.999d);
         Assert.That(Field<bool>(presentation, "singleGameOverVisible"), Is.False);

@@ -266,7 +266,7 @@ public sealed class BattleGroundPlayTests
     }
 
     [UnityTest]
-    public IEnumerator ABlockedFighterCanGuardOnTheFirstFrameEvenDuringHitStop()
+    public IEnumerator ABlockedFighterAcceptsGuardImmediatelyAndBlendsTheSwordDuringHitStop()
     {
         master.enabled = false; flow.enabled = false;
         for (int attacker = 0; attacker < 2; attacker++)
@@ -288,31 +288,30 @@ public sealed class BattleGroundPlayTests
                 dBody, Vector3.back, Vector3.zero, dGrip, Vector3.right);
             var upright = new CombatInput(90f, 0f);
             match.Step(upright, upright, attack, defence, now);
-            var strike = new CombatInput(40f, 120f);
+            var strike = new CombatInput(40f, 200f);
             var guard = new CombatInput(90f, 0f, true);
             CombatResult result = attacker == 0
                 ? match.Step(strike, guard, attack, defence, now)
                 : match.Step(guard, strike, defence, attack, now);
             Assert.That(result.Outcome, Is.EqualTo(CombatOutcome.GuardSuccess));
             InvokeMaster("BeginReaction", result, now);
+            GameObject sword = attacker == 0 ? firstSword : secondSword;
+            SwordPose captured = new SwordPose(sword.transform.localPosition, sword.transform.localRotation);
             SetKeys(attacker == 0 ? Key.LeftShift : Key.RightShift);
             yield return null;
             // Keep the test at the contact time even if the editor's next
             // rendered frame took longer than the short hit stop.
             master.GetType().GetField("matchTime", PrivateInstance).SetValue(master,now-Time.unscaledDeltaTime);
-            // The real scene path must bypass both the logical transition and
-            // the captured hit-stop sword when a staggered fighter guards.
+            // Guard is accepted during hit stop while the visible sword starts
+            // at its impact pose and moves through the shared transition.
             InvokeMaster("LateUpdate");
             Assert.That(MatchTime(),Is.LessThan(now+result.HitStopSeconds));
             SwordPose target = (SwordPose)player.GetType().GetField("TargetPose").GetValue(player);
-            GameObject sword = attacker == 0 ? firstSword : secondSword;
             Assert.That((bool)player.GetType().GetField("GuardHeld").GetValue(player), Is.True);
-            Assert.That(Vector3.Angle(target.Direction, (Quaternion)player.GetType().GetField("TargetRotation").GetValue(player) * Vector3.forward), Is.LessThan(.01f),
-                "The first input frame already follows the chosen guard direction.");
-            Assert.That(Vector3.Distance(sword.transform.localPosition, target.Position), Is.LessThan(.0001f));
-            Assert.That(Quaternion.Angle(sword.transform.localRotation, target.Rotation), Is.LessThan(.05f));
+            Assert.That(Vector3.Distance(sword.transform.localPosition, captured.Position), Is.LessThan(.0001f));
+            Assert.That(Quaternion.Angle(sword.transform.localRotation, captured.Rotation), Is.LessThan(.05f));
             Assert.That(match.IsStunned(attacker, MatchTime()), Is.True,
-                "Immediate defence cannot cancel the half-second offensive restriction.");
+                "Defence cannot cancel the one-second offensive restriction.");
             SetKeys(); yield return null;
         }
     }
@@ -327,7 +326,7 @@ public sealed class BattleGroundPlayTests
             player.GetType().GetField("Pitch").SetValue(player, -60f);
             player.GetType().GetField("Roll").SetValue(player, -45f);
         }
-        yield return null;
+        yield return new WaitForSecondsRealtime(GuardPoseTransition.DurationSeconds + .03f);
         foreach (GameObject sword in new[] { firstSword, secondSword })
             AssertCurrentPose(sword, false);
 
@@ -351,11 +350,15 @@ public sealed class BattleGroundPlayTests
         Assert.That(Field<bool>(master, "reactionActive"), Is.False, "A guard toggle cannot cause an attack.");
         // Point directly forward: guard follows the new input freely.
         first.GetType().GetField("Pitch").SetValue(first, 0f);
-        yield return null;
+        yield return new WaitForSecondsRealtime(.09f);
         Assert.That(Vector3.Angle(firstSword.transform.forward, firstPlayer.transform.forward), Is.LessThan(.01f));
         Assert.That(Field<bool>(master, "reactionActive"), Is.False);
 
+        Quaternion beforeReset = firstSword.transform.localRotation;
         master.GetType().GetMethod("ResetMatch").Invoke(master, null);
+        Assert.That(Quaternion.Angle(beforeReset, firstSword.transform.localRotation), Is.LessThan(.05f),
+            "Reset returns the sword smoothly rather than replacing the current pose.");
+        yield return new WaitForSecondsRealtime(GuardPoseTransition.DurationSeconds + .03f);
         foreach (GameObject sword in new[] { firstSword, secondSword })
         {
             Assert.That(Vector3.Distance(sword.transform.localRotation * Vector3.forward, Vector3.up), Is.LessThan(0.00001f));
@@ -499,7 +502,7 @@ public sealed class BattleGroundPlayTests
         Assert.That((int)fx.GetType().GetProperty("ActiveBurstCount").GetValue(fx), Is.InRange(1, 12));
         Camera camera = firstPlayer.GetComponentInChildren<Camera>();
         Assert.That(camera.fieldOfView, Is.InRange(60, 64.01f));
-        yield return new WaitForSecondsRealtime(0.15f);
+        yield return new WaitForSecondsRealtime(0.4f);
         Assert.That(camera.fieldOfView, Is.EqualTo(60f).Within(0.001f));
         master.GetType().GetMethod("ResetMatch").Invoke(master, null);
         Assert.That((int)fx.GetType().GetProperty("TrailSampleCount").GetValue(fx), Is.EqualTo(0));
@@ -779,7 +782,7 @@ public sealed class BattleGroundPlayTests
         {
             Assert.That(players[i].transform.Cast<Transform>().Count(t => t.name.StartsWith("Chambara") && t.gameObject.activeSelf), Is.EqualTo(1));
             Assert.That(swords[i].transform.Cast<Transform>().Count(t => t.name.StartsWith("Chambara") && t.name != "ChambaraGripGlove" && t.gameObject.activeSelf), Is.EqualTo(1));
-            Assert.That(swords[i].transform.Cast<Transform>().Count(t => t.name == "ChambaraGripGlove" && t.gameObject.activeSelf), Is.EqualTo(1));
+            Assert.That(swords[i].transform.Cast<Transform>().Count(t => t.name == "ChambaraGripGlove" && t.gameObject.activeSelf), Is.Zero);
             Assert.That(BodyRenderers(players[i], swords[i]).All(r => r is SkinnedMeshRenderer), Is.True);
             Assert.That(ReferenceEquals(Field<object>(master, i == 0 ? "first" : "second").GetType().GetField("Motion").GetValue(Field<object>(master, i == 0 ? "first" : "second")), motions[i]), Is.True);
             AssertCurrentPose(swords[i], true);
@@ -1415,7 +1418,9 @@ public sealed class BattleGroundPlayTests
         SetKeys();
         yield return null;
         Assert.That(Paused(), Is.EqualTo(value));
-        Assert.That(HubOverlay(), Is.EqualTo(value));
+        Assert.That((bool)flow.GetType().GetProperty("PauseOpen").GetValue(flow), Is.EqualTo(value));
+        Assert.That(Field<GameObject>(flow, "pauseCanvas").activeSelf, Is.EqualTo(value));
+        Assert.That(HubOverlay(), Is.False, "The legacy phone overlay is not part of the current Esc menu.");
         Assert.That(master.transform.Find("Pause UI"), Is.Null, "The Y debug menu has been removed.");
     }
     private void Flow(string method, params object[] args) => flow.GetType().GetMethod(method).Invoke(flow, args);

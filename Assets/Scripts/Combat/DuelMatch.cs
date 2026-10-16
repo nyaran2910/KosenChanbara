@@ -12,17 +12,15 @@ namespace SchoolFestival.Combat
         public readonly bool GuardHeld;
         public readonly bool Valid;
         public readonly int PoseGeneration;
-        public readonly bool ThrustRequested;
 
         public CombatInput(float forwardAngle, float angularSpeed, bool guardHeld = false,
-            bool valid = true, int poseGeneration = 0, bool thrustRequested = false)
+            bool valid = true, int poseGeneration = 0)
         {
             ForwardAngle = forwardAngle;
             AngularSpeed = angularSpeed;
             GuardHeld = guardHeld;
             Valid = valid;
             PoseGeneration = poseGeneration;
-            ThrustRequested = thrustRequested;
         }
     }
 
@@ -57,7 +55,6 @@ namespace SchoolFestival.Combat
         public const float RearmAngle = 80f;
         public const float HitPush = 3f;
         public const float GuardPush = 2f;
-        public const float ThrustPush = HitPush;
         public const float GuardBreakPush = 1.5f;
         public const float HitStopSeconds = 0.06f;
         public const float GuardStopSeconds = 0.04f;
@@ -88,7 +85,8 @@ namespace SchoolFestival.Combat
                 secondAttack ? gates[1].Kind : AttackKind.None, firstPose, secondPose,
                 first.Valid && first.GuardHeld,
                 second.Valid && second.GuardHeld,
-                firstInvulnerable: IsInvulnerable(0, now), secondInvulnerable: IsInvulnerable(1, now)).Contact;
+                firstInvulnerable: IsInvulnerable(0, now), secondInvulnerable: IsInvulnerable(1, now),
+                firstHitStart: gates[0].HitStartFraction, secondHitStart: gates[1].HitStartFraction).Contact;
             if (result.Outcome == CombatOutcome.None) return default;
 
             resolvingUntil = now + CombatDamageWindow.Seconds;

@@ -138,41 +138,4 @@ public sealed class ReconstructedCombatContactTests
             Is.EqualTo(CombatOutcome.GuardBreak), "The crossed guard must cover the actual cut location as well as its direction.");
     }
 
-    [Test]
-    public void EqualBodyContactsWithoutASwordCollisionDoNotPreferEitherPlayerSeat()
-    {
-        var first = new CombatPose(new Vector3(-.45f, 0f, .2f), Vector3.forward,
-            new Vector3(-.45f, 0f, .5f), Vector3.forward, Vector3.zero, Vector3.forward,
-            Vector3.forward, Vector3.zero, Vector3.forward);
-        var second = new CombatPose(new Vector3(.45f, 0f, 2.3f), Vector3.back,
-            new Vector3(.45f, 0f, 2f), Vector3.back, Vector3.forward * 2.5f, Vector3.back,
-            Vector3.back, Vector3.zero, Vector3.back);
-        Assert.That(CombatContact.TryBladesClash(first, second, out _, AttackKind.Thrust, AttackKind.Thrust), Is.False);
-        foreach (bool swapped in new[] { false, true })
-        {
-            CombatResult result = CombatExchange.Resolve(AttackKind.Thrust, AttackKind.Thrust,
-                swapped ? second : first, swapped ? first : second, false, false).Contact;
-            Assert.That(result.Outcome, Is.EqualTo(CombatOutcome.Clash));
-            Assert.That(result.Attacker, Is.EqualTo(-1));
-            Assert.That(result.PushedPlayer, Is.EqualTo(-1));
-            Assert.That(result.SignedPush, Is.Zero);
-        }
-    }
-
-    [TestCase(false, CombatOutcome.GuardBreak)]
-    [TestCase(true, CombatOutcome.GuardSuccess)]
-    public void MovingTheGuardAfterAnEarlyImpactCannotRewriteThatImpact(bool initiallyGuarded, CombatOutcome expected)
-    {
-        var thrust = new CombatPose(new Vector3(0f, .15f, .55f), Vector3.forward,
-            new Vector3(0f, .15f, .75f), Vector3.forward, Vector3.zero, Vector3.forward,
-            Vector3.forward, Vector3.zero, Vector3.forward);
-        Vector3 body = Vector3.forward * 2.4f, intercepting = new Vector3(0f, -.75f, 1.85f);
-        Vector3 remote = intercepting + Vector3.right * 5f;
-        var defence = new CombatPose(initiallyGuarded ? intercepting : remote, Vector3.up,
-            initiallyGuarded ? remote : intercepting, Vector3.up, body, Vector3.back,
-            Vector3.zero, intercepting, Vector3.up);
-        CombatContactResult result = CombatContact.Resolve(AttackKind.Thrust, thrust, defence, true);
-        Assert.That(result.Outcome, Is.EqualTo(expected));
-        Assert.That(result.Fraction, Is.Zero);
-    }
 }

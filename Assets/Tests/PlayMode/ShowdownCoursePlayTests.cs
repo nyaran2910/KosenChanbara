@@ -512,7 +512,7 @@ public sealed class ShowdownCoursePlayTests
         Assert.That(RuntimeField(enemies[1], "AttackTimer"), Is.EqualTo(-1f));
         for (int i = 2; i < enemies.Length; i++)
             Assert.That(Vector3.Distance(((GameObject)RuntimeField(enemies[i], "Root")).transform.position, positions[i]),
-                Is.InRange(.001f, ShowdownCombat.WaitingWalkSpeed * .5f + .001f), "Waiting enemies only stroll near their own anchors.");
+                Is.InRange(.001f, (float)RuntimeField(enemies[i], "WaitingRadius") + .001f), "Waiting enemies only stroll near their own anchors.");
 
         Call(master, "RemoveSingleNpc", enemies[0]);
         Tick(.1f);
@@ -956,56 +956,6 @@ public sealed class ShowdownCoursePlayTests
     }
 
     [UnityTest]
-    public IEnumerator PlayerLogicalGuardMatchesDuelContactWhileTheVisibleSwordStillLags()
-    {
-        for (int octant = 0; octant < 8; octant++)
-        {
-            Call(master, "ResetMatch");
-            Player.rotation = Quaternion.Euler(0f, 37f, 0f);
-            object player = Field<object>(master, "first");
-            Vector3 direction = ShowdownCombat.ReadyDirection(octant);
-            SetRuntimeField(player, "TargetRotation", Quaternion.LookRotation(direction,
-                Mathf.Abs(direction.y) > .9f ? Vector3.forward : Vector3.up));
-            Call(master, "UpdatePose", player, true);
-            SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + GuardPoseTransition.DurationSeconds + .01d);
-            Call(master, "UpdatePose", player, true);
-            Transform sword = (Transform)RuntimeField(player, "Sword");
-            CombatPose duel = (CombatPose)Call(master, "PlayerCombatPose", player,
-                new CombatInput(90f, 0f, true, true, 600 + octant), false);
-            Vector3 forward = duel.Forward.normalized;
-            var thrust = new CombatPose(duel.BodyCenter + forward * 1.8f, -forward,
-                duel.BodyCenter + forward * .8f, -forward, duel.BodyCenter + forward * 2.8f,
-                -forward, -forward, duel.BodyCenter + forward * .8f, -forward);
-            CombatContactResult expected = CombatContact.Resolve(AttackKind.Thrust, thrust, duel, true);
-            Assert.That(expected.Outcome, Is.EqualTo(CombatOutcome.GuardSuccess).Or.EqualTo(CombatOutcome.GuardBreak), "A real body contact is required for guard octant " + octant);
-
-            for (int lag = 0; lag < 2; lag++)
-            {
-                sword.position = duel.Grip + (lag == 0 ? Vector3.zero : Player.right * 4f);
-                Vector3 visibleDirection = lag == 0 ? forward : duel.Blade;
-                sword.rotation = Quaternion.LookRotation(visibleDirection,
-                    Mathf.Abs(Vector3.Dot(visibleDirection, Vector3.up)) > .9f
-                        ? Player.forward : Vector3.up);
-                var visible = new CombatPose(sword.position, sword.forward, sword.position, sword.forward,
-                    duel.BodyCenter, forward, Vector3.zero, sword.position, sword.forward);
-                if (lag != 0)
-                    Assert.That(CombatContact.Resolve(AttackKind.Thrust, thrust, visible, true).Outcome,
-                        Is.EqualTo(CombatOutcome.GuardBreak), "The distant displayed sword cannot stop the thrust.");
-
-                CombatPose single = (CombatPose)Call(master, "PlayerDefencePose", player);
-                Assert.That(Vector3.Distance(single.Grip, duel.Grip), Is.LessThan(.00001f));
-                Assert.That(Vector3.Angle(single.Blade, duel.Blade), Is.LessThan(.01f));
-                Assert.That(Vector3.Distance(single.BodyCenter, duel.BodyCenter), Is.LessThan(.00001f));
-                Assert.That(Vector3.Angle(single.Forward, duel.Forward), Is.LessThan(.01f));
-                CombatContactResult actual = CombatContact.Resolve(AttackKind.Thrust, thrust, single, true);
-                Assert.That(actual.Outcome, Is.EqualTo(expected.Outcome), "Visible lag must not change guard octant " + octant);
-                Assert.That(actual.Fraction, Is.EqualTo(expected.Fraction).Within(.00001f));
-            }
-        }
-        yield return null;
-    }
-
-    [UnityTest]
     public IEnumerator OpeningAttackersPrepareWhileApproachingAndOnlyFlashJustBeforeSwinging()
     {
         Call(master, "SpawnSingleNpc"); Call(master, "SpawnSingleNpc");
@@ -1123,46 +1073,57 @@ public sealed class ShowdownCoursePlayTests
     }
 
     [UnityTest]
-    public IEnumerator SurvivingEnemySmoothlyChangesItsContinuousGuardAfterEveryReceivedHit()
+    public IEnumerator SurvivingEnemyChangesItsGuardDuringEveryHitRecoveryInTheActualAiLoop()
     {
         Call(master, "SpawnSingleNpc");
         object enemy = Field<IList>(master, "singleNpcs")[0];
         SetRuntimeField(master, "singleActiveNpc", enemy);
         Transform root = ((GameObject)RuntimeField(enemy, "Root")).transform;
-        root.position = Player.position + Player.forward * 2f;
+        root.position = Player.position + Player.forward * 3f;
         root.rotation = Quaternion.LookRotation(-Player.forward);
         SetRuntimeField(enemy, "Hearts", 3);
-        Assert.That(RuntimeField(enemy, "GuardOctant"), Is.EqualTo(-1));
-        float initialBias = (float)RuntimeField(enemy, "GuardBiasTarget");
-        Transform sword = (Transform)RuntimeField(Field<object>(master, "first"), "Sword");
+        SetRuntimeField(enemy, "MaximumHearts", 3);
+        SetRuntimeField(enemy, "ContinuousAttack", false);
+        SetRuntimeField(enemy, "GuardCurrentAngle", 13.27f);
+        SetRuntimeField(enemy, "GuardTargetAngle", 13.27f);
+        SetRuntimeField(enemy, "NextGuardChange", double.PositiveInfinity);
+        Call(master, "UpdateNpcGuard", enemy, 0f);
+        SetRuntimeField(enemy, "ContinuousAttack", true);
         for (int hit = 1; hit <= 2; hit++)
         {
             if (hit > 1)
-            {
-                SetRuntimeField(master, "matchTime", (double)RuntimeField(enemy, "RecoveryUntil") + .01d);
-            }
-            // Observe direction selection after actual damage without letting
-            // the newly selected guard intercept the fixture's next attack.
-            SetRuntimeField(enemy, "StunnedUntil", 0d);
-            SetRuntimeField(master, "singleActiveNpc", null);
-            foreach (float angle in new[] { 80f, 5f })
-            {
-                sword.position = Player.position + Vector3.up * .15f + Player.forward * .55f;
-                sword.rotation = Quaternion.LookRotation(Quaternion.AngleAxis(-angle, Player.right) * Player.forward, Player.up);
-                UpdateSingleAttackWithManualSword(new CombatInput(angle, 90f, false, true, 44));
-            }
+                SetRuntimeField(master, "matchTime", (double)RuntimeField(enemy, "StunnedUntil") + .21d);
+            Vector3 previousDirection = (Vector3)RuntimeField(enemy, "GuardDirection");
+            CombatPose player = (CombatPose)Call(master, "PlayerCombatPose", Field<object>(master, "first"),
+                new CombatInput(0f, 0f), false);
+            CombatPose opponent = (CombatPose)Call(master, "NpcCombatPose", enemy);
+            Call(master, "ApplySingleContact", enemy, new CombatResult(CombatOutcome.Hit, 0, 1, .5f), player, opponent, false);
             Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(3 - hit));
-            Assert.That(RuntimeField(enemy, "GuardOctant"), Is.EqualTo(-1));
-            Assert.That(RuntimeField(enemy, "GuardBiasTarget"), Is.EqualTo(initialBias + hit * 90f));
-            SetRuntimeField(master, "singleActiveNpc", enemy);
             float previousBias = (float)RuntimeField(enemy, "GuardBias");
-            SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + .01d);
-            Call(master, "UpdateNpcGuard", enemy, .01f);
-            Assert.That((float)RuntimeField(enemy, "GuardBias") - previousBias, Is.InRange(.29f, .31f),
-                "A hit changes the guard's destination gradually, not through an octant snap.");
+            for (int frame = 1; frame <= 36; frame++)
+            {
+                double now = Field<double>(master, "matchTime") + 1d / 60d;
+                SetRuntimeField(master, "matchTime", now);
+                Call(master, "MoveSingleNpcs", 1f / 60f);
+                float bias = (float)RuntimeField(enemy, "GuardBias");
+                Assert.That(bias - previousBias, Is.InRange(-.001f, 5.001f),
+                    "Receiving damage must start a smooth guard change, including while staggered.");
+                previousBias = bias;
+                Assert.That((bool)Call(master, "SingleNpcGuarding", enemy, now), Is.True);
+                Call(master, "TickSingleNpcAvatars", now, 1f / 60f);
+                if (frame == 12)
+                    Assert.That(Vector3.Angle(previousDirection, ((Transform)RuntimeField(enemy, "Sword")).forward),
+                        Is.GreaterThan(45f), "The visible guard must change before damage can be received again.");
+            }
+            Assert.That((float)RuntimeField(enemy, "GuardBias"),
+                Is.EqualTo((float)RuntimeField(enemy, "GuardBiasTarget")).Within(.01f));
+            Assert.That(Vector3.Angle(previousDirection, (Vector3)RuntimeField(enemy, "GuardDirection")), Is.GreaterThan(70f),
+                "The real recovery loop must not freeze the guard until another identical cut lands.");
+            double renderedAt = Field<double>(master, "matchTime");
+            Call(master, "TickSingleNpcAvatars", renderedAt, 1f / 60f);
             Transform blade = (Transform)RuntimeField(enemy, "Sword");
             CombatPose pose = (CombatPose)Call(master, "NpcCombatPose", enemy);
-            Assert.That(Vector3.Angle(blade.forward, pose.Blade), Is.LessThan(.01f), "The continuously moving visible guard and contact agree.");
+            Assert.That(Vector3.Angle(blade.forward, pose.Blade), Is.LessThan(.01f));
         }
         yield return null;
     }
@@ -1190,130 +1151,6 @@ public sealed class ShowdownCoursePlayTests
         Call(master, "SetGameplaySuspended", true); Call(master, "SetFreeMode", false); Call(master, "SetGameMode", true);
         Assert.That(Get(master, "IsFreeMode"), Is.False);
         Assert.That(Get(master, "IsSingleMode"), Is.True);
-        yield return null;
-    }
-
-    [UnityTest]
-    public IEnumerator P2ForwardImpulseSteersTheSingleSwordAndHitsOnlyOnce()
-    {
-        yield return ForwardImpulseHitsThroughSceneController(true);
-    }
-
-    [UnityTest]
-    public IEnumerator DuelForwardImpulseUsesTheSharedContactAndThrustPush()
-    {
-        yield return ForwardImpulseHitsThroughSceneController(false);
-    }
-
-    private IEnumerator ForwardImpulseHitsThroughSceneController(bool single)
-    {
-        if (!single)
-        {
-            Call(master, "SetGameplaySuspended", true); Call(master, "SetGameMode", false); Call(master, "ResetMatch");
-            Call(Field<object>(master, "series"), "Enter", RoundPhase.Fight, Field<double>(master, "matchTime"));
-            Call(master, "SetGameplaySuspended", false);
-        }
-        else SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + 3d);
-
-        object player = Field<object>(master, "first"), other = Field<object>(master, "second");
-        var motions = new[] { (MonoBehaviour)RuntimeField(player, "Motion"), (MonoBehaviour)RuntimeField(other, "Motion") };
-        object hardware = RuntimeField(motions[0], "hardware"), phone = RuntimeField(motions[0], "hub");
-        var latest = (System.Array)RuntimeField(hardware, "latest");
-        var valid = (bool[])RuntimeField(hardware, "valid");
-        var phoneSlots = (System.Array)RuntimeField(phone, "slots");
-        for (int slot = 0; slot < 2; slot++) SetRuntimeField(phoneSlots.GetValue(slot), "ChannelOpen", false);
-        System.Type sampleType = System.Type.GetType("MotionSample, Assembly-CSharp", true);
-        uint[] sequences = { 0, 0 };
-        int pushingSlot = single ? 1 : 0;
-        Quaternion forward = Quaternion.Euler(90f, 0f, 0f);
-        void Supply(bool calibrate, bool pushing)
-        {
-            for (int slot = 0; slot < 2; slot++)
-            {
-                uint sequence = ++sequences[slot];
-                Quaternion rotation = !calibrate && slot == pushingSlot ? forward : Quaternion.identity;
-                Vector3 acceleration = pushing && slot == pushingSlot ? Vector3.forward * 5f : Vector3.zero;
-                // The competing single controller reports angular motion: a
-                // straight P2 impulse must still select and retain its own pose.
-                Vector3 speed = single && !calibrate && slot != pushingSlot ? Vector3.right * 140f : Vector3.zero;
-                latest.SetValue(System.Activator.CreateInstance(sampleType, new object[] {
-                    rotation, speed, acceleration, false, true, true, true, sequence, (ushort)0,
-                    sequence * 20d, Time.realtimeSinceStartupAsDouble
-                }), slot);
-                valid[slot] = true;
-                Call(motions[slot], "Update");
-            }
-        }
-        void Frame(float dt)
-        {
-            if (single) Tick(dt);
-            else
-            {
-                SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + dt);
-                Call(master, "LateUpdate");
-            }
-        }
-
-        object enemy = null;
-        Transform enemyRoot = null;
-        if (single)
-        {
-            Call(master, "SpawnSingleNpc");
-            enemy = Field<IList>(master, "singleNpcs")[0];
-            enemyRoot = ((GameObject)RuntimeField(enemy, "Root")).transform;
-            enemyRoot.position = Player.position + Player.forward * 2.5f;
-            enemyRoot.rotation = Quaternion.LookRotation(-Player.forward);
-            Call(RuntimeField(enemy, "Avatar"), "Reset");
-            SetRuntimeField(enemy, "Hearts", 3);
-            SetRuntimeField(enemy, "NextAttack", 0d);
-            SetRuntimeField(enemy, "OpeningAttack", false);
-            SetRuntimeField(enemy, "ApproachAttack", false);
-            MoveSingleNpcsWithReadyView(0f);
-            // Keep the body stationary and unguarded during controller samples.
-            // Stagger is a valid guard state, so it cannot disable defence here.
-            SetRuntimeField(enemy, "WindupSeconds", 100f);
-            SetRuntimeField(enemy, "AttackTimer", 100f + (float)RuntimeField(enemy, "SwingSeconds"));
-            SetRuntimeField(enemy, "AdvanceDuringWindup", false);
-            SetRuntimeField(master, "singleSpawnTimer", 100f);
-        }
-        Supply(true, false); Frame(.01f);
-        for (int i = 0; i < 10; i++) { Supply(false, false); Frame(.01f); }
-        Supply(false, true); Frame(.01f);
-        Supply(false, true); Frame(.01f);
-        Transform sword = (Transform)RuntimeField(player, "Sword");
-        Vector3 handAtStart = sword.localPosition;
-        Assert.That(Quaternion.Angle((Quaternion)RuntimeField(player, "TargetRotation"),
-            (Quaternion)Get(motions[pushingSlot], "CurrentLocalRotation")), Is.LessThan(.05f));
-        Assert.That(Field<double>(master, "matchTime") - (double)RuntimeField(player, "ThrustAt"), Is.LessThan(.001d));
-        if (single) Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(3), "The impulse begins at zero extension, before moving blade contact.");
-        else Assert.That(Field<bool>(master, "reactionActive"), Is.False);
-        Vector3 enemyAtStart = single ? enemyRoot.position : Vector3.zero;
-        Vector3 playerAtStart = Player.position;
-
-        Supply(false, false); Frame(.065f);
-        if (single)
-        {
-            Assert.That(Field<object>(master, "singleMotion"), Is.SameAs(motions[1]));
-            Assert.That(sword.localPosition.z - handAtStart.z, Is.GreaterThan(.1f));
-            Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(2));
-            Assert.That(Vector3.Distance(enemyRoot.position, enemyAtStart), Is.LessThan(.001f),
-                "The shared hitstop precedes single-player displacement as in duel.");
-        }
-        else
-        {
-            Assert.That(Field<bool>(master, "reactionActive"), Is.True);
-            Assert.That(Vector3.Distance(Field<Vector3>(master, "pushTarget"), Field<Vector3>(master, "pushStart")),
-                Is.EqualTo(DuelMatch.ThrustPush).Within(.001f));
-        }
-        for (int i = 0; i < 7; i++) { Supply(false, false); Frame(.03f); }
-        if (single)
-        {
-            Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(2), "One consumed impulse cannot damage again during return.");
-            Assert.That(Vector3.Distance(enemyRoot.position, enemyAtStart), Is.EqualTo(DuelMatch.ThrustPush).Within(.005f));
-            Assert.That(Vector3.Distance(Player.position, playerAtStart), Is.EqualTo(DuelMatch.ThrustPush).Within(.005f),
-                "The attacker follows the same exchange displacement, preserving a reachable opponent.");
-        }
-        Assert.That((bool)motions[pushingSlot].GetType().GetMethod("TryConsumeThrust").Invoke(motions[pushingSlot], null), Is.False);
         yield return null;
     }
 

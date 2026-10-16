@@ -6,17 +6,19 @@ using UnityEngine.InputSystem;
 using UnityEngine.UI;
 
 // Runtime UI keeps the battle scene, avatar assets and controller sessions alive.
-public sealed class GameFlowController : MonoBehaviour
+public sealed partial class GameFlowController : MonoBehaviour
 {
     public enum Screen { Title, Difficulty, Characters, Preview, Playing }
     public Screen CurrentScreen { get; private set; } = Screen.Title;
-    public bool IsPlaying => CurrentScreen == Screen.Playing && !pauseOpen;
+    public bool IsPlaying => CurrentScreen == Screen.Playing && !pauseOpen && !ScoreDialogOpen;
     public bool PauseOpen => pauseOpen;
     private MasterController master;
     private DuelPresentation presentation;
     private PhoneControllerHub phone;
-    private GameObject menuCanvas, pauseCanvas;
+    private GameObject menuCanvas, pauseCanvas, tutorialCanvas;
+    private Text tutorialPrompt;
     private ControllerAxisCalibrationPanel axisCalibration;
+    private ControllerRegistrationPanel registration;
     private readonly Text[] controllerStatus = new Text[2];
     private readonly Button[] pauseDisplayButtons = new Button[2];
     private readonly Dictionary<Button, Outline> pauseFocusOutlines = new Dictionary<Button, Outline>();
@@ -64,11 +66,13 @@ public sealed class GameFlowController : MonoBehaviour
         SyncFocus();
         menuCanvas = Canvas("Game flow", 1200); pauseCanvas = Canvas("Connection pause", 1210);
         BuildPause(); pauseCanvas.SetActive(false);
+        BuildTutorialOverlay(); tutorialCanvas.SetActive(false);
+        BuildSessionTimer();
         axisCalibration = gameObject.AddComponent<ControllerAxisCalibrationPanel>();
         axisCalibration.Initialize(motion, font, CloseAxisCalibration);
-        // The 2026-10-10 request explicitly limits pause to three gameplay
-        // actions plus display choices. Keep calibration APIs available, but
-        // do not add a fourth pause action here.
+        registration = gameObject.AddComponent<ControllerRegistrationPanel>();
+        registration.Initialize(motion, font, CloseAxisCalibration);
+        scoreClient = new ScoreboardClient();
         master.SetGameplaySuspended(true); phone.SetOverlayVisible(false);
         BuildPage();
     }
@@ -76,7 +80,11 @@ public sealed class GameFlowController : MonoBehaviour
     private void Update()
     {
         if (master == null) return;
-        if (axisCalibration != null && axisCalibration.IsOpen) return;
+        UpdateLeaderboard();
+        UpdateTutorialOverlay();
+        UpdateSessionTimer();
+        if ((axisCalibration != null && axisCalibration.IsOpen) || (registration != null && registration.IsOpen)) return;
+        if (ScoreDialogOpen) { UpdateScoreDialog(); return; }
         Keyboard keyboard = Keyboard.current;
         if (keyboard != null && keyboard.escapeKey.wasPressedThisFrame)
         {
@@ -140,7 +148,11 @@ public sealed class GameFlowController : MonoBehaviour
             if (CurrentScreen == Screen.Preview) CloseCharacterPreview();
             else TogglePause();
         }
-        else if (action == MenuResetAction.ShortPress) sensor.Recenter();
+        else if (action == MenuResetAction.ShortPress)
+        {
+            sensor.Recenter();
+            if (CurrentScreen == Screen.Playing && !pauseOpen) master.NotifyTutorialReset();
+        }
     }
 
     private void UpdateControllerStatus()
@@ -174,15 +186,11 @@ public sealed class GameFlowController : MonoBehaviour
         }
         MotionController sensor = motion[i];
         MotionSample sample = default;
-        bool phoneInput = false;
-        Quaternion reference = Quaternion.identity;
         bool valid = sensor != null && sensor.IsPoseValid
-            && sensor.TryGetMenuSample(out sample, out phoneInput, out reference);
-        Vector2Int flick = gestures[i].Read(sample.Rotation,
-            sample.AngularVelocityDegrees, sample.GyroscopeValid, valid,
-            valid && sensor.GuardHeld, valid ? sensor.MenuPoseGeneration : -1,
-            valid ? sample.BrowserTimestampMilliseconds / 1000.0 : double.NaN,
-            phoneInput, reference);
+            && sensor.TryGetMenuSample(out sample);
+        Vector2Int flick = gestures[i].Read(sample.Rotation, sample.AngularVelocityDegrees, sample.GyroscopeValid, valid,
+            valid && sensor.GuardHeld, valid ? sensor.PoseGeneration : -1,
+            valid ? sample.BrowserTimestampMilliseconds / 1000.0 : double.NaN, sensor != null && sensor.ActiveSource == ControllerInputSource.Phone);
         return result != Vector2Int.zero ? result : flick;
     }
 
@@ -190,7 +198,7 @@ public sealed class GameFlowController : MonoBehaviour
     private void Navigate(int controller, Vector2Int direction)
     {
         if (CurrentScreen == Screen.Title)
-        { titleChoice = Wrap(titleChoice + (direction.y != 0 ? -direction.y : direction.x), 3); BuildPage(); return; }
+        { titleChoice = Wrap(titleChoice + (direction.y != 0 ? -direction.y : direction.x), 4); BuildPage(); return; }
         if (CurrentScreen == Screen.Difficulty)
         { difficultyChoice=Wrap(difficultyChoice+(direction.y!=0?-direction.y:direction.x),3);BuildPage();return; }
         if (CurrentScreen == Screen.Preview)
@@ -211,7 +219,13 @@ public sealed class GameFlowController : MonoBehaviour
     private void Confirm(int controller)
     {
         if (CurrentScreen == Screen.Title)
-        { if (titleChoice == 2) ChooseFreeMode(); else if(titleChoice==0)ChooseSingleMode();else ChooseMode(false); return; }
+        {
+            if (titleChoice == 0) ChooseSingleMode();
+            else if (titleChoice == 1) ChooseMode(false);
+            else if (titleChoice == 2) ChooseFreeMode();
+            else ChooseTutorialMode();
+            return;
+        }
         if (CurrentScreen == Screen.Difficulty)
         { if(difficultyChoice==2)Back();else ChooseDifficulty(difficultyChoice==0);return; }
         if (CurrentScreen == Screen.Preview)
@@ -220,8 +234,8 @@ public sealed class GameFlowController : MonoBehaviour
         int i = SelectionPlayer(controller);
         if(row[i]==3){if(focusedBack[i])Back();else OpenCharacterPreview(i);return;}
         if (ready[i]) return;
-        if (row[i] == 0) { master.SetCharacter(i, focusedCharacter[i]); row[i] = 1; BuildPage(); }
-        else if (row[i] == 1) { master.SetColor(i, focusedColor[i]); row[i] = 2; BuildPage(); }
+        if (row[i] == 0) { master.SetCharacter(i, focusedCharacter[i]); BuildPage(); }
+        else if (row[i] == 1) { master.SetColor(i, focusedColor[i]); BuildPage(); }
         else Ready(i);
     }
 
@@ -234,7 +248,7 @@ public sealed class GameFlowController : MonoBehaviour
     public void ChooseMode(bool single)
     {
         if(!single)singleDifficultyFlow=false;
-        master.SetGameplaySuspended(true); master.SetFreeMode(false); master.SetGameMode(single);
+        master.SetGameplaySuspended(true); master.SetTutorialMode(false); master.SetFreeMode(false); master.SetGameMode(single);
         master.SetStage(single ? 2 : 0);
         OpenCharacters();
     }
@@ -242,8 +256,16 @@ public sealed class GameFlowController : MonoBehaviour
     public void ChooseFreeMode()
     {
         singleDifficultyFlow=false;
-        master.SetGameplaySuspended(true); master.SetGameMode(false); master.SetFreeMode(true);
+        master.SetGameplaySuspended(true); master.SetTutorialMode(false); master.SetGameMode(false); master.SetFreeMode(true);
         master.SetStage(2);
+        OpenCharacters();
+    }
+
+    public void ChooseTutorialMode()
+    {
+        singleDifficultyFlow=false;
+        master.SetGameplaySuspended(true); master.SetFreeMode(false); master.SetGameMode(true);
+        master.SetTutorialMode(true); master.SetStage(2);
         OpenCharacters();
     }
 
@@ -263,6 +285,7 @@ public sealed class GameFlowController : MonoBehaviour
 
     private void OpenCharacters()
     {
+        leaderboardRefreshAt = 0;
         ResetMenuGestures();
         phone.SetSinglePlayerMode(false); ready[0] = ready[1] = false; row[0] = row[1] = 0;
         focusedBack[0] = focusedBack[1] = false;
@@ -300,7 +323,7 @@ public sealed class GameFlowController : MonoBehaviour
     }
     public void ReturnToTitle()
     {
-        CloseOverlays(); CurrentScreen = Screen.Title; titleChoice = 0; singleDifficultyFlow=false;
+        CloseOverlays(); master.SetTutorialMode(false); CurrentScreen = Screen.Title; titleChoice = 0; singleDifficultyFlow=false;
         ResetMenuGestures();
         inputAfter = Time.unscaledTime + .25f; BuildPage();
     }
@@ -308,6 +331,7 @@ public sealed class GameFlowController : MonoBehaviour
     public void ReturnToCharacters()
     {
         if(CurrentScreen==Screen.Preview){CloseCharacterPreview();return;}
+        leaderboardRefreshAt = 0;
         CloseOverlays(); ready[0] = ready[1] = false; row[0] = row[1] = 0; SyncFocus();
         focusedBack[0] = focusedBack[1] = false;
         ResetMenuGestures();
@@ -343,8 +367,10 @@ public sealed class GameFlowController : MonoBehaviour
 
     public void TogglePause()
     {
+        if (ScoreDialogOpen) return;
         pauseOpen = !pauseOpen; master.SetGameplaySuspended(pauseOpen || CurrentScreen != Screen.Playing);
         pauseCanvas.SetActive(pauseOpen); phone.SetSinglePlayerMode(false);
+        UpdateTutorialOverlay();
         if(pauseOpen){UpdateControllerStatus();RefreshPauseDisplayOptions();}
         menuCanvas.SetActive(!pauseOpen && CurrentScreen != Screen.Playing);
         if(pauseOpen && CurrentScreen!=Screen.Playing && CurrentScreen!=Screen.Preview)
@@ -353,7 +379,7 @@ public sealed class GameFlowController : MonoBehaviour
             background.enabled=true;
         }
         else pauseCanvas.transform.Find("Connection controls/Menu background").GetComponent<RawImage>().enabled=false;
-        phone.SetOverlayVisible(pauseOpen); inputAfter = Time.unscaledTime + .2f;
+        phone.SetOverlayVisible(false); inputAfter = Time.unscaledTime + .2f;
         ResetMenuGestures(); ClearSelection();
         if (pauseOpen)
         {
@@ -409,8 +435,6 @@ public sealed class GameFlowController : MonoBehaviour
     private IEnumerable<Button> PauseButtons()
     {
         foreach (Button button in pauseCanvas.GetComponentsInChildren<Button>()) yield return button;
-        if (axisCalibration != null && axisCalibration.EntryButton.isActiveAndEnabled)
-            yield return axisCalibration.EntryButton;
     }
 
     private void RestartFromPause()
@@ -418,6 +442,26 @@ public sealed class GameFlowController : MonoBehaviour
         if (!pauseOpen) return;
         master.ResetMatch();
         TogglePause();
+    }
+
+    private void BuildTutorialOverlay()
+    {
+        tutorialCanvas = Canvas("Tutorial guidance", 1000);
+        Transform panel = FullScreen(tutorialCanvas.transform, "Tutorial instruction");
+        Image background = Box(panel, "Instruction background", new Vector2(0f, 365f),
+            new Vector2(1570f, 180f), new Color(.91f, .97f, 1f, .92f));
+        background.raycastTarget = false;
+        tutorialPrompt = Label(panel, "", new Vector2(0f, 365f), new Vector2(1530f, 160f), 34, Ink);
+        tutorialPrompt.resizeTextMinSize = 28;
+    }
+
+    private void UpdateTutorialOverlay()
+    {
+        if (tutorialCanvas == null) return;
+        bool visible = CurrentScreen == Screen.Playing && master.IsTutorialMode && !pauseOpen;
+        tutorialCanvas.SetActive(visible);
+        if (!visible) return;
+        tutorialPrompt.text = master.TutorialInstruction;
     }
 
     private static Vector2 ButtonCentre(Button button)
@@ -477,9 +521,10 @@ public sealed class GameFlowController : MonoBehaviour
     {
         PreviewImage(0,new Vector2(-640,45),new Vector2(490,770));
         PreviewImage(1,new Vector2(640,45),new Vector2(490,770));
-        Choice(page,"ひとりで遊ぶ",new Vector2(0,150),titleChoice==0,ChooseSingleMode);
-        Choice(page,"ふたりで対戦",new Vector2(0,0),titleChoice==1,()=>ChooseMode(false));
-        Choice(page,"フリーモード",new Vector2(0,-150),titleChoice==2,ChooseFreeMode);
+        Choice(page,"ひとりで遊ぶ",new Vector2(0,225),titleChoice==0,ChooseSingleMode);
+        Choice(page,"ふたりで対戦",new Vector2(0,75),titleChoice==1,()=>ChooseMode(false));
+        Choice(page,"フリーモード",new Vector2(0,-75),titleChoice==2,ChooseFreeMode);
+        Choice(page,"チュートリアル",new Vector2(0,-225),titleChoice==3,ChooseTutorialMode);
     }
 
     private void BuildDifficulty()
@@ -510,10 +555,11 @@ public sealed class GameFlowController : MonoBehaviour
 
     private void BuildCharacters()
     {
+        bool showRanking = master.IsSingleMode && !master.IsTutorialMode;
         int count = master.IsSingleMode ? 1 : 2;
         for (int i=0;i<count;i++)
         {
-            int player=i; float x=count==1?0:i==0?-465:465; Color accent=Palette[i];
+            int player=i; float x=count==1?(showRanking?-465:0):i==0?-465:465; Color accent=Palette[i];
             if(ready[i])Label(page,"準備OK",new Vector2(x,290),new Vector2(510,44),25,accent);
             PreviewImage(i,new Vector2(x,120),new Vector2(640,390));
             Label(page,CharacterLabel(master.CharacterIndex(i)),new Vector2(x,-84),new Vector2(750,48),32,Ink);
@@ -538,12 +584,13 @@ public sealed class GameFlowController : MonoBehaviour
             if(row[i]==2) Outline(readyButton.image,Sky);
             Button previewButton=Button(page,"プレビュー",Vector2.zero,new Vector2(220,55),Pale,()=>OpenCharacterPreview(player));
             RectTransform previewRect=previewButton.GetComponent<RectTransform>();
-            previewRect.anchorMin=previewRect.anchorMax=new Vector2(count==1||i==1?1f:.5f,0f);
+            previewRect.anchorMin=previewRect.anchorMax=new Vector2((count==1&&!showRanking)||i==1?1f:.5f,0f);
             previewRect.pivot=new Vector2(1f,0f);previewRect.anchoredPosition=new Vector2(-60,60);
             if(row[i]==3&&!focusedBack[i])Outline(previewButton.image,Sky);
         }
         Button back=BackButton(page,"もどる",Back);
         for(int i=0;i<count;i++)if(row[i]==3&&focusedBack[i]) { Outline(back.image,Sky);break; }
+        if(showRanking) BuildLeaderboard();
     }
 
     private void BuildPause()
@@ -560,9 +607,17 @@ public sealed class GameFlowController : MonoBehaviour
             controllerStatus[i]=Label(panel,"",new Vector2(i==0?-225:225,300),new Vector2(340,44),26,Ink);
             controllerStatus[i].resizeTextForBestFit=false;
         }
-        pauseResumeButton=BackButton(panel,"ゲームに戻る",TogglePause);
-        BackButton(panel,"タイトルへ",ReturnToTitle,80);
-        BackButton(panel,"やり直す",RestartFromPause,160);
+        BackButton(panel,"タイトルに戻る",ReturnToTitle,240);
+        pauseResumeButton=BackButton(panel,"ゲームに戻る",TogglePause,160);
+        BackButton(panel,"やり直す",RestartFromPause,80);
+        BackButton(panel,"コントローラ",OpenControllerRegistration);
+    }
+
+    public void OpenControllerRegistration()
+    {
+        if (!pauseOpen || registration == null || Time.unscaledTime < inputAfter) return;
+        pauseCanvas.SetActive(false); phone.SetOverlayVisible(false);
+        ResetMenuGestures(); registration.Open();
     }
 
     public void OpenAxisCalibration()
@@ -577,7 +632,7 @@ public sealed class GameFlowController : MonoBehaviour
     private void CloseAxisCalibration()
     {
         pauseCanvas.SetActive(pauseOpen);
-        phone.SetOverlayVisible(pauseOpen);
+        phone.SetOverlayVisible(false);
         ResetMenuGestures();
         for (int i=0;i<2;i++)
         {
@@ -653,7 +708,7 @@ public sealed class GameFlowController : MonoBehaviour
     private static int Wrap(int value,int count)=>count<=0?0:(value%count+count)%count;
     private void ResetMenuGestures(){foreach(MenuGestureNavigation gesture in gestures)gesture.Reset();}
     private static void ClearSelection(){if(EventSystem.current!=null)EventSystem.current.SetSelectedGameObject(null);}
-    private void OnDestroy(){if(master!=null&&CurrentScreen==Screen.Preview)master.EndCharacterPreview();ClearPreviews();RestoreGameplayRenderers();if(presentation!=null)presentation.SetMenuPresentation(false);if(menuBackground!=null)Destroy(menuBackground);}
+    private void OnDestroy(){if(timerChime!=null)Destroy(timerChime);scoreClient?.Dispose();if(master!=null&&CurrentScreen==Screen.Preview)master.EndCharacterPreview();ClearPreviews();RestoreGameplayRenderers();if(presentation!=null)presentation.SetMenuPresentation(false);if(menuBackground!=null)Destroy(menuBackground);}
 
     private sealed class Preview : IDisposable
     {

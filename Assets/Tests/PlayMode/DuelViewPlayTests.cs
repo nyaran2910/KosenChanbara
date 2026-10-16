@@ -146,6 +146,43 @@ public sealed class DuelViewPlayTests
     }
 
     [UnityTest]
+    public IEnumerator SmoothCameraCarriesRepeatedCombatRootTranslationsWithoutFallingBehind()
+    {
+        Type viewType = FindViewType();
+        var player = new GameObject("Recoil camera player");
+        var opponent = new GameObject("Recoil camera opponent");
+        var cameraObject = new GameObject("Recoil camera", typeof(Camera));
+        cameraObject.transform.SetParent(player.transform, false);
+        opponent.transform.position = player.transform.position + Vector3.forward * 3f;
+        object view = Activator.CreateInstance(viewType, player.transform, opponent.transform, Array.Empty<Renderer>());
+        try
+        {
+            viewType.GetMethod("SetFocusTarget").Invoke(view, new object[] { opponent.transform });
+            viewType.GetMethod("Tick").Invoke(view, new object[] { 0d });
+            Vector3 previousPlayer = player.transform.position;
+            Vector3 previousCamera = cameraObject.transform.position;
+            for (int hit = 1; hit <= 4; hit++)
+            {
+                Vector3 translation = Vector3.back * 3f;
+                player.transform.position += translation;
+                opponent.transform.position += translation;
+                viewType.GetMethod("Tick").Invoke(view, new object[] { hit * .12d });
+                Assert.That(Vector3.Distance(cameraObject.transform.position - previousCamera, translation), Is.LessThan(.01f),
+                    "The camera must carry the combatants' recoil translation.");
+                Assert.That(Vector3.Distance(player.transform.position - previousPlayer, translation), Is.LessThan(.001f));
+                previousPlayer = player.transform.position;
+                previousCamera = cameraObject.transform.position;
+            }
+        }
+        finally
+        {
+            viewType.GetMethod("Dispose").Invoke(view, null);
+            Object.Destroy(player); Object.Destroy(opponent);
+        }
+        yield return null;
+    }
+
+    [UnityTest]
     public IEnumerator SingleOpponentHandoffAndBodyTurnRemainSmoothAtDifferentFrameRates()
     {
         Type viewType = FindViewType();
@@ -185,6 +222,58 @@ public sealed class DuelViewPlayTests
                 Object.Destroy(player); Object.Destroy(opponent); Object.Destroy(next);
             }
         }
+        yield return null;
+    }
+
+    [UnityTest]
+    public IEnumerator AttackerFollowThroughIsDirectionalSmoothDuringCombosAndReturnsToFraming()
+    {
+        Type type = FindViewType();
+        foreach (bool smooth in new[] { false, true })
+            foreach (int fps in new[] { 30, 60, 144 })
+            {
+                var player = new GameObject("Attacker camera player");
+                var opponent = new GameObject("Attacker camera opponent");
+                var cameraObject = new GameObject("Attacker camera", typeof(Camera));
+                cameraObject.transform.SetParent(player.transform, false);
+                Camera camera = cameraObject.GetComponent<Camera>();
+                opponent.transform.position = Vector3.forward * 3f;
+                object view = Activator.CreateInstance(type, player.transform, opponent.transform, Array.Empty<Renderer>());
+                void Call(string method, params object[] args) => type.GetMethod(method).Invoke(view, args);
+                try
+                {
+                    if (smooth) Call("SetFocusTarget", opponent.transform);
+                    Call("Tick", 0d);
+                    Vector3 rest = camera.transform.position;
+                    Quaternion upright = camera.transform.rotation;
+                    float restFov = camera.fieldOfView;
+                    Call("AttackImpact", 0d, Vector3.right, .03f);
+                    Call("Tick", .02d);
+                    Assert.That(Vector3.Distance(camera.transform.position, rest), Is.LessThan(.001f), "Hitstop precedes follow-through.");
+                    Call("Tick", .15d);
+                    Assert.That(Vector3.Distance(camera.transform.position, rest), Is.InRange(.1f, .23f));
+                    Assert.That(camera.fieldOfView, Is.GreaterThan(restFov + 1f));
+                    float roll = Mathf.DeltaAngle(0f, (Quaternion.Inverse(upright) * camera.transform.rotation).eulerAngles.z);
+                    Assert.That(roll, Is.LessThan(-.5f), "The attack camera follows the cut direction.");
+                    Vector3 beforeCombo = camera.transform.position;
+                    Call("AttackImpact", .15d, Vector3.left, .03f); Call("Tick", .15d);
+                    Assert.That(Vector3.Distance(camera.transform.position, beforeCombo), Is.LessThan(.001f), "An immediate reverse cut must not reset the camera offset abruptly.");
+                    for (int frame = 1; frame <= fps; frame++)
+                    {
+                        Vector3 shift = Vector3.forward * (3f / fps);
+                        player.transform.position += shift; opponent.transform.position += shift;
+                        Call("Tick", .15d + frame / (double)fps);
+                        Vector3 offset = camera.transform.position - player.transform.position - rest;
+                        Assert.That(offset.magnitude, Is.LessThan(.23f), "Camera feedback must stay bounded without recoil lag.");
+                    }
+                    Assert.That(Vector3.Distance(camera.transform.position - player.transform.position, rest), Is.LessThan(.001f));
+                    Assert.That(Quaternion.Angle(camera.transform.rotation, upright), Is.LessThan(.06f));
+                    Assert.That(camera.fieldOfView, Is.EqualTo(restFov).Within(.001f));
+                    Call("AttackImpact", 1.2d, Vector3.down, 0f); Call("Tick", 1.3d); Call("Reset");
+                    Assert.That(camera.fieldOfView, Is.EqualTo(restFov).Within(.001f));
+                }
+                finally { Call("Dispose"); Object.Destroy(player); Object.Destroy(opponent); }
+            }
         yield return null;
     }
 

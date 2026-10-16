@@ -7,9 +7,6 @@ public sealed class CombatExchangeTests
     [TestCase(AttackKind.Cut, false, false, CombatOutcome.Hit)]
     [TestCase(AttackKind.Cut, true, true, CombatOutcome.GuardSuccess)]
     [TestCase(AttackKind.Cut, true, false, CombatOutcome.GuardBreak)]
-    [TestCase(AttackKind.Thrust, false, false, CombatOutcome.Hit)]
-    [TestCase(AttackKind.Thrust, true, true, CombatOutcome.GuardSuccess)]
-    [TestCase(AttackKind.Thrust, true, false, CombatOutcome.GuardBreak)]
     public void OneMovingBladeHasTheSameHitAndGuardRulesFromEitherSlot(
         AttackKind kind, bool heldGuard, bool effectiveGuard, CombatOutcome outcome)
     {
@@ -33,13 +30,7 @@ public sealed class CombatExchangeTests
     }
 
     [TestCase(AttackKind.Cut, AttackKind.Cut, false)]
-    [TestCase(AttackKind.Cut, AttackKind.Thrust, false)]
-    [TestCase(AttackKind.Thrust, AttackKind.Cut, false)]
-    [TestCase(AttackKind.Thrust, AttackKind.Thrust, false)]
     [TestCase(AttackKind.Cut, AttackKind.Cut, true)]
-    [TestCase(AttackKind.Cut, AttackKind.Thrust, true)]
-    [TestCase(AttackKind.Thrust, AttackKind.Cut, true)]
-    [TestCase(AttackKind.Thrust, AttackKind.Thrust, true)]
     public void TwoAttackingBladesResolveTheEarlierBodyContactSymmetrically(
         AttackKind firstKind, AttackKind secondKind, bool heldGuard)
     {
@@ -117,7 +108,6 @@ public sealed class CombatExchangeTests
     }
 
     [TestCase(AttackKind.Cut)]
-    [TestCase(AttackKind.Thrust)]
     public void RecoverySuppressesOnlyItsOwnAttackAndKeepsGuardAvailable(AttackKind kind)
     {
         CombatPose attack = Attack(kind), defence = Guard(Vector3.forward * 3.2f, Vector3.right);
@@ -131,67 +121,11 @@ public sealed class CombatExchangeTests
             true, false).Contact.Outcome, Is.EqualTo(CombatOutcome.GuardSuccess));
     }
 
-    [TestCase(2.4f, true)]
-    [TestCase(3.3f, false)]
-    public void AnimatedThrustHitsDuringItsDriveButNotItsChamberHoldOrReturn(
-        float targetDistance, bool chamberOverlapsBody)
-    {
-        var rest = new SwordPose(new Vector3(0f, .15f, .55f), Quaternion.identity);
-        CombatPose target = Guard(Vector3.forward * targetDistance, Vector3.up);
-        float driveEnd = ThrustPose.ChamberSeconds + ThrustPose.DriveSeconds;
-        float returnAt = driveEnd + ThrustPose.HoldSeconds;
-        SwordPose extended = ThrustPose.Apply(rest, driveEnd);
-        SwordPose previous = ThrustPose.Apply(rest, 0f);
-        int driveHits = 0, chamberContacts = 0, holdContacts = 0, returnContacts = 0;
-        const float stepSeconds = .005f;
-        int steps = Mathf.CeilToInt(ThrustPose.DurationSeconds / stepSeconds);
-        for (int i = 1; i <= steps; i++)
-        {
-            float age = Mathf.Min(i * stepSeconds, ThrustPose.DurationSeconds);
-            SwordPose current = ThrustPose.Apply(rest, age);
-            var attack = new CombatPose(previous.Position, previous.Direction, current.Position,
-                current.Direction, Vector3.zero, Vector3.forward, Vector3.forward,
-                extended.Position, extended.Direction);
-            bool bodyContact = CombatContact.TrySweptBladeTouchesBody(attack.PreviousGrip,
-                attack.PreviousBlade, attack.Grip, attack.Blade, target.BodyCenter, out _);
-            CombatExchangeResult result = CombatExchange.Resolve(AttackKind.Thrust, AttackKind.None,
-                attack, target, false, false);
-            if (age <= ThrustPose.ChamberSeconds + .000001f)
-            {
-                if (bodyContact) chamberContacts++;
-                Assert.That(result.Contact.Outcome, Is.EqualTo(CombatOutcome.None), "Chamber pulls the blade back.");
-            }
-            else if (age <= driveEnd + .000001f)
-            {
-                if (result.Contact.Outcome == CombatOutcome.Hit) driveHits++;
-            }
-            else
-            {
-                if (bodyContact)
-                {
-                    if (age <= returnAt + .000001f) holdContacts++;
-                    else returnContacts++;
-                }
-                Assert.That(result.Contact.Outcome, Is.EqualTo(CombatOutcome.None),
-                    "A blade still touching the torso during the hold or return must not hit again.");
-            }
-            previous = current;
-        }
-        Assert.That(driveHits, Is.GreaterThan(0), "The visible forward drive reaches this finite body.");
-        Assert.That(chamberContacts > 0, Is.EqualTo(chamberOverlapsBody));
-        Assert.That(holdContacts, Is.GreaterThan(0));
-        Assert.That(returnContacts, Is.GreaterThan(0), "Returning blade contact is real, rather than a distant miss.");
-        Assert.That(Vector3.Distance(previous.Position, rest.Position), Is.LessThan(.00001f));
-    }
-
     private static CombatPose Attack(AttackKind kind)
     {
         Vector3 grip = new Vector3(0f, .15f, .75f);
-        return kind == AttackKind.Cut
-            ? new CombatPose(grip, Vector3.up, grip, Vector3.forward, Vector3.zero,
-                Vector3.forward, Vector3.down, grip, Vector3.forward)
-            : new CombatPose(new Vector3(0f, .15f, .55f), Vector3.forward, grip,
-                Vector3.forward, Vector3.zero, Vector3.forward, Vector3.forward, grip, Vector3.forward);
+        return new CombatPose(grip, Vector3.up, grip, Vector3.forward, Vector3.zero,
+            Vector3.forward, Vector3.down, grip, Vector3.forward);
     }
 
     private static CombatPose Guard(Vector3 body, Vector3 direction)
@@ -210,15 +144,9 @@ public sealed class CombatExchangeTests
     {
         Vector3 forward = second ? Vector3.back : Vector3.forward;
         Vector3 body = second ? Vector3.forward * 3f : Vector3.zero;
-        if (kind == AttackKind.Cut)
-        {
-            Vector3 grip = new Vector3(second ? -.3f : .3f, 0f, second ? 2f : 1f);
-            Vector3 blade = second ? Vector3.up : Quaternion.AngleAxis(-45f, Vector3.right) * Vector3.forward;
-            return new CombatPose(grip, blade, grip, forward, body, forward, Vector3.down, grip, forward);
-        }
-        Vector3 previous = new Vector3(second ? -.3f : .3f, 0f, second ? 3.2f : -.1f);
-        Vector3 current = new Vector3(second ? -.3f : .3f, 0f, second ? 1.9f : 1.2f);
-        return new CombatPose(previous, forward, current, forward, body, forward, forward, current, forward);
+        Vector3 grip = new Vector3(second ? -.3f : .3f, 0f, second ? 2f : 1f);
+        Vector3 blade = second ? Vector3.up : Quaternion.AngleAxis(-45f, Vector3.right) * Vector3.forward;
+        return new CombatPose(grip, blade, grip, forward, body, forward, Vector3.down, grip, forward);
     }
 
     private static void CrossingCuts(bool lateClash, out CombatPose first, out CombatPose second)
@@ -234,7 +162,7 @@ public sealed class CombatExchangeTests
     private static float Push(AttackKind kind, CombatOutcome outcome)
         => outcome == CombatOutcome.GuardSuccess ? -DuelMatch.GuardPush
             : outcome == CombatOutcome.GuardBreak ? DuelMatch.GuardBreakPush
-            : kind == AttackKind.Thrust ? DuelMatch.ThrustPush : DuelMatch.HitPush;
+            : DuelMatch.HitPush;
 
     private static void AssertSwapped(CombatExchangeResult first, CombatExchangeResult second)
     {

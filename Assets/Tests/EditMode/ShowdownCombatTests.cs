@@ -4,6 +4,18 @@ using UnityEngine;
 
 public sealed class ShowdownCombatTests
 {
+    [TestCase(-90f)] [TestCase(0f)] [TestCase(90f)] [TestCase(32.5f)]
+    public void RetryDirectionsStayContinuousAboveTheBodyAndChangeLane(float previous)
+    {
+        for (int i = 0; i <= 100; i++)
+        {
+            float angle = ShowdownCombat.AlternativeReadyAngle(previous, i / 100f);
+            Assert.That(angle, Is.InRange(-90f, 90f));
+            Assert.That(Mathf.Abs(angle - previous), Is.GreaterThanOrEqualTo(34.999f));
+            Assert.That(ShowdownCombat.UpperReadyDirection(angle).y, Is.GreaterThanOrEqualTo(-.00001f));
+        }
+    }
+
     [Test]
     public void MultiHeartEnemiesAppearTwiceAsOftenAcrossTheFullRun()
     {
@@ -253,29 +265,6 @@ public sealed class ShowdownCombatTests
             Assert.That(ShowdownCombat.ReadyDirection(octant).y, Is.LessThan(-.7f));
     }
 
-    [TestCase(30, 1)]
-    [TestCase(60, 2)]
-    [TestCase(144, 3)]
-    public void LiveGuardMovesThroughEveryAngleWithoutHoldsOrOctantSteps(int fps, int hearts)
-    {
-        float previous = ShowdownCombat.GuardAngleDegrees(13.27f, .83f, 0d, hearts);
-        var visited = new bool[8];
-        int intermediate = 0;
-        for (int frame = 1; frame <= fps * 40; frame++)
-        {
-            float angle = ShowdownCombat.GuardAngleDegrees(13.27f, .83f, (double)frame / fps, hearts);
-            float change = Mathf.DeltaAngle(previous, angle);
-            Assert.That(change, Is.InRange(10f / fps - .001f, 45f / fps + .001f),
-                "The guard drifts continuously, including across zero degrees.");
-            visited[Mathf.FloorToInt(angle / 45f)] = true;
-            if (Mathf.Abs(Mathf.DeltaAngle(Mathf.Round(angle / 45f) * 45f, angle)) > 1f) intermediate++;
-            Assert.That(ShowdownCombat.PlaneDirection(angle).magnitude, Is.EqualTo(1f).Within(.0001f));
-            previous = angle;
-        }
-        foreach (bool direction in visited) Assert.That(direction, Is.True);
-        Assert.That(intermediate, Is.GreaterThan(fps * 35), "Most samples are actual intermediate orientations.");
-    }
-
     [TestCase(-90f)]
     [TestCase(-67.3f)]
     [TestCase(-22.7f)]
@@ -299,11 +288,19 @@ public sealed class ShowdownCombatTests
             }
             Assert.That(Vector3.Distance(previous, announced), Is.LessThan(.000001f));
         }
-        Vector3 visible = (ShowdownCombat.UpperReadyDirection(angle + 1.37f) + Vector3.forward * .025f).normalized;
-        Vector3 frozen = ShowdownCombat.CommitUpperReady(visible, announced);
-        Assert.That(Vector3.Distance(frozen, ShowdownCombat.UpperReadyDirection(angle + 1.37f)), Is.LessThan(.000001f),
-            "Commit uses the last visible ready angle rather than snapping to its original centre.");
-        Assert.That(ShowdownCombat.CommitUpperReady(Vector3.down, announced), Is.EqualTo(announced));
+
+    }
+
+    [Test]
+    public void WaitingFightersWithDifferentGaitsDoNotWalkInLockstep()
+    {
+        Vector3 anchor = Vector3.forward * 8f;
+        Vector3 first = ShowdownCombat.WaitingTarget(anchor, .7f, 2d, .57f, .83f, .8f);
+        Vector3 second = ShowdownCombat.WaitingTarget(anchor, .7f, 2d, 1.08f, .46f, 1.15f);
+        Vector3 laterFirst = ShowdownCombat.WaitingTarget(anchor, .7f, 3d, .57f, .83f, .8f);
+        Vector3 laterSecond = ShowdownCombat.WaitingTarget(anchor, .7f, 3d, 1.08f, .46f, 1.15f);
+        Assert.That(Vector3.Distance(first, second), Is.GreaterThan(.1f));
+        Assert.That(Vector3.Angle(laterFirst - first, laterSecond - second), Is.GreaterThan(15f));
     }
 
     [TestCase(30, 0f)]

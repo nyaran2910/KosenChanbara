@@ -3,65 +3,89 @@ using NUnit.Framework;
 using SchoolFestival.Combat;
 using UnityEngine;
 
-public sealed class ControllerAxisMappingTests
+public sealed class ControllerInputDirectionTests
 {
-    [TestCase(0, 1, 2, 3)]
-    [TestCase(1, 1, 3, -2)]
-    [TestCase(2, 2, 1, -3)]
-    [TestCase(3, 2, 3, 1)]
-    [TestCase(4, 3, 1, 2)]
-    [TestCase(5, 3, 2, -1)]
-    public void SixPresetsKeepPoseGyroscopeAndAccelerationInOneFrame(int index, float x, float y, float z)
+    [Test]
+    public void ReversedPcbMountFlipsPitchAndYawAndPreservesBladeTwist()
     {
-        var mapping = ControllerAxisMapping.FromPreset(index);
-        Assert.That(mapping.PresetIndex, Is.EqualTo(index));
-        Vector3 input = new Vector3(1, 2, 3), expected = new Vector3(x, y, z);
-        Assert.That(Vector3.Distance(mapping.Gyroscope(input), expected), Is.LessThan(.001f));
-        Assert.That(Vector3.Distance(mapping.Acceleration(input), expected), Is.LessThan(.001f));
-        foreach (Vector3 axis in new[] { Vector3.right, Vector3.up, Vector3.forward })
-        {
-            Quaternion observed = Quaternion.AngleAxis(24, axis);
-            Quaternion intended = Quaternion.AngleAxis(24, mapping.Gyroscope(axis));
-            Assert.That(Quaternion.Angle(mapping.Rotation(observed), intended), Is.LessThan(.05f));
+        Vector3 RotateAxis(Vector3 axis) {
+            HardwareControllerFrame.Rotation(Quaternion.AngleAxis(30f, axis))
+                .ToAngleAxis(out _, out Vector3 mapped);
+            return mapped;
         }
-        Quaternion tilt = Quaternion.Euler(24, 40, 13);
-        Assert.That(Vector3.Distance(mapping.Rotation(tilt) * mapping.Acceleration(input),
-            mapping.Acceleration(tilt * input)), Is.LessThan(.001f));
+        // With the PCB face reversed, sensor roll/pitch still map to the
+        // original grip axes, while both swing directions reverse at source.
+        Assert.That(Vector3.Angle(RotateAxis(Vector3.right), Vector3.back), Is.LessThan(.01f));
+        Assert.That(Vector3.Angle(RotateAxis(Vector3.forward), Vector3.left), Is.LessThan(.01f));
+        Assert.That(Vector3.Angle(RotateAxis(Vector3.up), Vector3.down), Is.LessThan(.01f));
+        Assert.That(Vector3.Angle(HardwareControllerFrame.Vector(Vector3.up), Vector3.down), Is.LessThan(.01f));
+    }
+
+    [TestCase(1, 0)]
+    [TestCase(-1, 0)]
+    [TestCase(0, 1)]
+    [TestCase(0, -1)]
+    public void UprightReversedBoardKeepsPhysicalMenuAndCombatDirectionsAfterReset(int horizontal, int vertical)
+    {
+        Quaternion oldMount = Quaternion.Euler(0f, 90f, 0f);
+        // Turn the board over while leaving the top of the grip upright.
+        Quaternion boardTurn = Quaternion.AngleAxis(180f, Vector3.right);
+        Quaternion basePose = Quaternion.Euler(-90f, 0f, 0f);
+        Quaternion gesture = Quaternion.AngleAxis(24f, vertical != 0 ? Vector3.left * vertical : Vector3.up * horizontal);
+        foreach (Quaternion reference in new[] { Quaternion.identity, Quaternion.Euler(23f, -70f, 41f) })
+        {
+            Quaternion sensorBefore = reference * boardTurn;
+            Quaternion sensorAfter = reference * Quaternion.Inverse(oldMount) * gesture * oldMount * boardTurn;
+            Quaternion decodedBefore = HardwareControllerFrame.Rotation(sensorBefore);
+            Quaternion decodedAfter = HardwareControllerFrame.Rotation(sensorAfter);
+            Quaternion sword = basePose * Quaternion.Inverse(decodedBefore) * decodedAfter;
+            Assert.That(Quaternion.Angle(sword, basePose * gesture), Is.LessThan(.06f),
+                "Turning the PCB over must not change the sword's physical movement after a reset.");
+            var navigation = new MenuGestureNavigation();
+            navigation.Read(decodedBefore, true, false, 0, 0);
+            Assert.That(navigation.Read(decodedAfter, true, false, 0, .02), Is.EqualTo(new Vector2Int(horizontal, vertical)));
+
+            Vector3 physicalAcceleration = new Vector3(2f, -3f, 4f);
+            Vector3 beforeTurn = Quaternion.Inverse(oldMount) * physicalAcceleration;
+            Vector3 afterTurn = Quaternion.Inverse(boardTurn) * beforeTurn;
+            Assert.That(Vector3.Distance(HardwareControllerFrame.Vector(afterTurn), physicalAcceleration), Is.LessThan(.0001f));
+        }
     }
 
     [Test]
-    public void StandardAndInvalidPresetSelectionAreExplicit()
+    public void SwordPoseChangesProduceTheSameDirectionWithoutSourceSpecificCorrection()
     {
-        Assert.That(ControllerAxisMapping.FromPreset(0).IsCalibrated, Is.False);
-        Assert.That(ControllerAxisMapping.FromPreset(0).Rotation(Quaternion.Euler(20, 35, 50)),
-            Is.EqualTo(Quaternion.Euler(20, 35, 50)));
-        Assert.Throws<ArgumentOutOfRangeException>(() => ControllerAxisMapping.FromPreset(-1));
-        Assert.Throws<ArgumentOutOfRangeException>(() => ControllerAxisMapping.FromPreset(6));
+        Vector2Int Read() {
+            var input = new MenuGestureNavigation();
+            input.Read(Quaternion.identity, true, false, 0, 0);
+            return input.Read(Quaternion.AngleAxis(24, Vector3.up), true, false, 0, .02);
+        }
+        Assert.That(Read(), Is.EqualTo(Vector2Int.right));
     }
 
     [Test]
     public void DirectionDisplayFollowsContinuousMotionWithoutMenuRearming()
     {
         var monitor = new AxisDirectionMonitor();
-        Assert.That(monitor.Read(Quaternion.identity, Vector3.left * 480, true, true, 0), Is.EqualTo(Vector2Int.up));
-        Assert.That(monitor.Read(Quaternion.identity, Vector3.up * 480, true, true, .02), Is.EqualTo(Vector2Int.right));
-        Assert.That(monitor.Read(Quaternion.identity, Vector3.right * 480, true, true, .04), Is.EqualTo(Vector2Int.down));
-        Assert.That(monitor.Read(Quaternion.identity, Vector3.down * 480, true, true, .06), Is.EqualTo(Vector2Int.left));
-        Assert.That(monitor.Read(Quaternion.identity, Vector3.forward * 1000, true, true, .08), Is.EqualTo(Vector2Int.zero));
-        Assert.That(monitor.Read(Quaternion.identity, Vector3.left * 360, true, true, .10), Is.EqualTo(Vector2Int.zero));
+        Assert.That(monitor.Read(Quaternion.identity, true, 0), Is.EqualTo(Vector2Int.zero));
+        Assert.That(monitor.Read(Quaternion.AngleAxis(24, Vector3.up), true, .02), Is.EqualTo(Vector2Int.right));
+        Assert.That(monitor.Read(Quaternion.AngleAxis(48, Vector3.up), true, .04), Is.EqualTo(Vector2Int.right));
+        Assert.That(monitor.Read(Quaternion.AngleAxis(24, Vector3.up), true, .06), Is.EqualTo(Vector2Int.left));
+        Assert.That(monitor.Read(Quaternion.AngleAxis(25, Vector3.up), true, .08), Is.EqualTo(Vector2Int.zero));
     }
 
     [Test]
     public void OrientationDisplayUsesPacketTimeAndSkipsDuplicatesAndClockGaps()
     {
         var monitor = new AxisDirectionMonitor();
-        Assert.That(monitor.Read(Quaternion.identity, Vector3.zero, false, true, 10), Is.EqualTo(Vector2Int.zero));
-        Assert.That(monitor.Read(Quaternion.Euler(-8,0,0), Vector3.zero, false, true, 10.02), Is.EqualTo(Vector2Int.up));
-        Assert.That(monitor.Read(Quaternion.Euler(0,50,0), Vector3.zero, false, true, 10.02), Is.EqualTo(Vector2Int.zero));
-        Assert.That(monitor.Read(Quaternion.identity, Vector3.zero, false, true, 0), Is.EqualTo(Vector2Int.zero));
-        Assert.That(monitor.Read(Quaternion.Euler(-8,0,0), Vector3.zero, false, true, .02), Is.EqualTo(Vector2Int.up));
-        Assert.That(monitor.Read(Quaternion.Euler(0,50,0), Vector3.zero, false, true, 1), Is.EqualTo(Vector2Int.zero));
-        monitor.Read(Quaternion.identity, Vector3.zero, false, false, 1.02);
-        Assert.That(monitor.Read(Quaternion.Euler(0,70,0), Vector3.zero, false, true, 1.04), Is.EqualTo(Vector2Int.zero));
+        Quaternion upright = Quaternion.Euler(-90, 0, 0);
+        Assert.That(monitor.Read(upright, true, 10), Is.EqualTo(Vector2Int.zero));
+        Assert.That(monitor.Read(Quaternion.Euler(-82, 0, 0), true, 10.02), Is.EqualTo(Vector2Int.down));
+        Assert.That(monitor.Read(Quaternion.Euler(-82, 50, 0), true, 10.02), Is.EqualTo(Vector2Int.zero));
+        Assert.That(monitor.Read(upright, true, 0), Is.EqualTo(Vector2Int.zero));
+        Assert.That(monitor.Read(Quaternion.Euler(-82, 0, 0), true, .02), Is.EqualTo(Vector2Int.down));
+        Assert.That(monitor.Read(Quaternion.Euler(-82, 50, 0), true, 1), Is.EqualTo(Vector2Int.zero));
+        monitor.Read(upright, false, 1.02);
+        Assert.That(monitor.Read(Quaternion.Euler(-70, 0, 0), true, 1.04), Is.EqualTo(Vector2Int.zero));
     }
 }

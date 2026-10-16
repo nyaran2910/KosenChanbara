@@ -3,11 +3,13 @@ public static class HardwareGameAcknowledgement
     public const int PacketLength = 16;
 
     // Sent only after the game's UDP receiver accepts this controller's frame.
-    public static byte[] Encode(byte group, ControllerSlot slot, uint sequence)
+    public static byte[] Encode(byte group, ControllerSlot slot, uint sequence, ushort vibrationMilliseconds = 0)
     {
         byte[] bytes = new byte[PacketLength];
         bytes[0] = 0x4b; bytes[1] = 0x41; bytes[2] = 1; bytes[3] = PacketLength;
         bytes[4] = group; bytes[5] = (byte)slot;
+        bytes[6] = (byte)vibrationMilliseconds;
+        bytes[7] = (byte)(vibrationMilliseconds >> 8);
         Write(bytes, 8, sequence);
         Write(bytes, 12, HardwareMotionPacketCodec.Crc32(bytes, 12));
         return bytes;

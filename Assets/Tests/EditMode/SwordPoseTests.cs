@@ -468,8 +468,8 @@ public sealed class SwordPoseTests
             Assert.That(fast.Position.x,Is.InRange(right.Position.x,Chest.x));
             Assert.That(slow.Position.x,Is.LessThanOrEqualTo(previousSlow.Position.x));
             Assert.That(fast.Position.x,Is.LessThanOrEqualTo(previousFast.Position.x));
-            Assert.That(Quaternion.Angle(slow.Rotation,forward.Rotation),Is.LessThan(.06f));
-            Assert.That(Quaternion.Angle(fast.Rotation,right.Rotation),Is.LessThan(.06f));
+            Assert.That(Quaternion.Angle(previousSlow.Rotation,slow.Rotation),Is.LessThanOrEqualTo(GuardPoseTransition.GuardTurnDegreesPerSecond/fps+.06f));
+            Assert.That(Quaternion.Angle(previousFast.Rotation,fast.Rotation),Is.LessThanOrEqualTo(GuardPoseTransition.GuardTurnDegreesPerSecond/fps+.06f));
         }
         float slowRemaining=(slow.Position.x-Chest.x)/(left.Position.x-Chest.x);
         float fastRemaining=(fast.Position.x-right.Position.x)/(Chest.x-right.Position.x);
@@ -501,7 +501,7 @@ public sealed class SwordPoseTests
     [TestCase(30)]
     [TestCase(60)]
     [TestCase(144)]
-    public void EnteringGuardFromARearStanceNeverInterpolatesABackwardBlade(int fps)
+    public void EnteringGuardFromARearStanceMovesContinuouslyIntoTheFrontPlane(int fps)
     {
         var settings=new SwordPoseSettings(Chest);Vector3 last=Vector3.up;
         Quaternion rear=Quaternion.Euler(-40f,180f,23f);
@@ -512,9 +512,13 @@ public sealed class SwordPoseTests
         for(int frame=0;frame<=frames;frame++)
         {
             SwordPose current=transition.Update(guarded,true,1d+(double)frame/fps);
-            Assert.That(current.Direction.z,Is.GreaterThanOrEqualTo(-.00001f),"Guard must obey the front half-space even in its first transition frame.");
-            Assert.That(current.Position.z,Is.GreaterThanOrEqualTo(settings.MinimumForward));
-            Assert.That((current.Position+current.Direction*CombatContact.BladeLength).z,Is.GreaterThanOrEqualTo(settings.MinimumForward-.00001f));
+            if(frame==0) AssertPose(current,normal);
+            if((double)frame/fps>=GuardPoseTransition.DurationSeconds)
+            {
+                Assert.That(current.Direction.z,Is.GreaterThanOrEqualTo(-.00001f));
+                Assert.That(current.Position.z,Is.GreaterThanOrEqualTo(settings.MinimumForward));
+                AssertPose(current,guarded);
+            }
         }
     }
 

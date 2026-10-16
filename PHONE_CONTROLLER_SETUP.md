@@ -6,18 +6,13 @@
 
 ## 2. サーバーを起動
 
-Docker Desktopを起動し、[サーバーのRelease](https://github.com/nyaran2910/KosenChanbaraPhoneController/releases/latest) から `kosen-chanbara-phone-controller-amd64.tar.gz` をUnityプロジェクト直下へ置きます。そこでPowerShellを開いて実行します。
+Windows親機では総合リポジトリのルートで `just server` を実行します。Git・Node.js 24以上・justが必要です。学校Wi-Fi→有線LANの共有と、phone・HTTPSトンネル・score-serverを起動します。ルータのAP/ブリッジ化とDHCPオフは一度手動で行います。詳細は総合リポジトリの `docs/EVENT_SERVER_SETUP.md` を参照してください。
 
-```powershell
-docker load -i .\kosen-chanbara-phone-controller-amd64.tar.gz
-docker run --rm --name kosen-controller -p 127.0.0.1:8080:8080 --mount "type=bind,source=$($PWD.Path)\Assets\StreamingAssets,target=/unity-config" kosen-chanbara-phone-controller:1.0.0
-```
-
-停止は `Ctrl+C` です。起動のたびにUnity用接続設定とQRのURLが自動更新されます。
+Mac/Linux開発時は `just phone-start` / `just phone-stop` を使います。UnityはUDP42045でphoneを自動探索し、IP・キーの配布は不要です。一時HTTPS URLの利用中はスマホもインターネット接続が必要です。
 
 ## 3. ゲームを開始
 
-`BattleGround` を再生してQRを読み、「センサーを使う」を押した後、スマホを指定姿勢にして「リセンター」を押します。PCとスマホが別のWi-FiでもSTUNで直接接続を試みますが、ネットワークによってはTURNサーバーの設定が別途必要です。
+`BattleGround` を再生し、Esc → コントローラ → P1/P2から表示されるQRを読み、「センサーを使う」を押した後、スマホを指定姿勢にして「リセンター」を押します。接続後はUnityで軸の組み合わせ6通りと各軸の正転・反転を選び、「完了」で保存してEscへ戻ります。PCとスマホが別のWi-FiでもSTUNで直接接続を試みますが、ネットワークによってはTURNサーバーの設定が別途必要です。
 
 Wi-Fiの端末間通信制限を無効にし、Windows FirewallではUnityのプライベートネットワーク通信を許可してください。
 

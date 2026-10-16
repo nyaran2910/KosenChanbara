@@ -1,5 +1,4 @@
 using UnityEngine;
-using SchoolFestival.Combat;
 
 public sealed class MotionController : MonoBehaviour
 {
@@ -24,11 +23,6 @@ public sealed class MotionController : MonoBehaviour
     private bool hasPreviousSample;
     private float angularSpeedDegrees;
     private bool poseValid;
-    private readonly ThrustGesture thrustGesture = new ThrustGesture();
-    private bool thrustPending;
-    private double thrustReceivedAt;
-    private readonly ControllerAxisMapping[] menuAxisMappings = new ControllerAxisMapping[3];
-    private int observedPhoneConnection = -1;
 
     public ControllerSlot Slot => slot;
     public ControllerInputSource ActiveSource => hub != null && hub.IsConnected(slot)
@@ -42,12 +36,9 @@ public sealed class MotionController : MonoBehaviour
     public bool IsPoseValid => poseValid && observedSource == ActiveSource
         && observedRecenterVersion == RecenterVersion && !IsStale;
     public int PoseGeneration { get; private set; }
-    public int MenuPoseGeneration { get; private set; }
     public Quaternion ReferenceRotation => referenceRotation;
     public int InputSessionGeneration => ActiveSource == ControllerInputSource.Phone
         ? hub.GetConnectionGeneration(slot) : 0;
-    public ControllerAxisMapping AxisMapping => ActiveSource == ControllerInputSource.Phone
-        && observedPhoneConnection != InputSessionGeneration ? default : menuAxisMappings[(int)ActiveSource];
     public Quaternion CurrentLocalRotation { get; private set; } = UprightStanceRotation;
     public bool GuardHeld => !IsStale && TryGetLatestSample(out MotionSample sample) && sample.GuardHeld;
     public bool RecenterHeld => !IsStale && TryGetLatestSample(out MotionSample sample) && sample.RecenterHeld;
@@ -71,12 +62,6 @@ public sealed class MotionController : MonoBehaviour
         }
 
         if (hardware == null) hardware = HardwareControllerHub.EnsureInstance();
-        int phoneConnection = hub.GetConnectionGeneration(slot);
-        if (phoneConnection != observedPhoneConnection)
-        {
-            menuAxisMappings[(int)ControllerInputSource.Phone] = default;
-            observedPhoneConnection = phoneConnection;
-        }
         ControllerInputSource source = ActiveSource;
         int recenterVersion = source == ControllerInputSource.Hardware
             ? hardware.GetRecenterVersion(slot) : hub.GetRecenterVersion(slot);
@@ -89,8 +74,6 @@ public sealed class MotionController : MonoBehaviour
             hasPreviousSample = false;
             angularSpeedDegrees = 0f;
             poseValid = false;
-            thrustGesture.Reset();
-            thrustPending = false;
             AdvancePoseGeneration();
         }
 
@@ -116,18 +99,8 @@ public sealed class MotionController : MonoBehaviour
             hasReference = true;
         }
 
-        Quaternion relativeRotation = Quaternion.Inverse(referenceRotation) * sample.Rotation;
-        CurrentLocalRotation = baseRotation * relativeRotation;
+        CurrentLocalRotation = CalculateLocalRotation(sample);
         poseValid = true;
-        if (sample.GuardHeld || !sample.AccelerationValid)
-            thrustPending = false;
-        if (newSample && thrustGesture.Update(CurrentLocalRotation * Vector3.forward,
-            CurrentLocalRotation * sample.LinearAcceleration, sample.AccelerationValid,
-            sample.GuardHeld, sample.BrowserTimestampMilliseconds / 1000.0, PoseGeneration))
-        {
-            thrustPending = true;
-            thrustReceivedAt = sample.ReceivedRealtime;
-        }
     }
 
     private void InvalidatePose()
@@ -138,8 +111,6 @@ public sealed class MotionController : MonoBehaviour
         angularSpeedDegrees = 0f;
         hasPreviousSample = false;
         hasObservedMotionSequence = false;
-        thrustGesture.Reset();
-        thrustPending = false;
     }
 
     private void UpdateAngularSpeed(MotionSample sample)
@@ -173,55 +144,21 @@ public sealed class MotionController : MonoBehaviour
         return false;
     }
 
-    public bool TryConsumeThrust()
-    {
-        // Hubs can receive a newer packet before this component's Update runs.
-        // Never consume a gesture queued before invalid input or calibration.
-        bool triggered = thrustPending && IsPoseValid
-            && TryGetLatestSample(out MotionSample sample)
-            && sample.OrientationValid && sample.AccelerationValid && !sample.GuardHeld
-            && observedRecenterVersion == (ActiveSource == ControllerInputSource.Hardware
-                ? hardware.GetRecenterVersion(slot) : hub.GetRecenterVersion(slot))
-            && Time.realtimeSinceStartupAsDouble - thrustReceivedAt <= .12;
-        thrustPending = false;
-        return triggered;
-    }
-
-    public void SetMenuAxisMapping(ControllerAxisMapping mapping)
-    {
-        if (ActiveSource == ControllerInputSource.None) return;
-        menuAxisMappings[(int)ActiveSource] = mapping;
-        // Only menu gesture history changes. Combat pose, recenter, velocity
-        // and thrust state belong to the original sensor stream.
-        MenuPoseGeneration++;
-    }
-
     private void AdvancePoseGeneration()
     {
         PoseGeneration++;
-        MenuPoseGeneration++;
     }
 
-    // Calibration reads raw packets; menus receive the optional correction.
-    // Uncalibrated input keeps the original phone/hardware behavior exactly.
-    public bool TryGetMenuSample(out MotionSample sample, out bool phoneInput, out Quaternion reference)
+    // Menu angular motion uses the device sample, never the combat recenter.
+    // Both hardware paths have already applied the physical PCB mount once.
+    public bool TryGetMenuSample(out MotionSample sample)
     {
-        phoneInput = ActiveSource == ControllerInputSource.Phone;
-        reference = referenceRotation;
-        if (!TryGetLatestSample(out sample)) return false;
-        ControllerAxisMapping mapping = AxisMapping;
-        if (!mapping.IsCalibrated) return true;
-        Quaternion originalMenuRotation = phoneInput ? MenuGestureNavigation.PhoneWorldToMenuWorld * sample.Rotation
-            : Quaternion.Inverse(referenceRotation) * sample.Rotation;
-        Quaternion rotation = mapping.Rotation(originalMenuRotation);
-        sample = new MotionSample(rotation, mapping.Gyroscope(sample.AngularVelocityDegrees),
-            mapping.Acceleration(sample.LinearAcceleration), sample.GuardHeld, sample.OrientationValid,
-            sample.GyroscopeValid, sample.AccelerationValid, sample.Sequence, sample.RecenterSequence,
-            sample.BrowserTimestampMilliseconds, sample.ReceivedRealtime, sample.RecenterHeld);
-        phoneInput = false;
-        reference = Quaternion.identity;
-        return true;
+        sample = default;
+        return poseValid && ActiveSource == observedSource && TryGetLatestSample(out sample);
     }
+
+    private Quaternion CalculateLocalRotation(MotionSample sample) =>
+        baseRotation * Quaternion.Inverse(referenceRotation) * sample.Rotation;
 
     public void Recenter()
     {

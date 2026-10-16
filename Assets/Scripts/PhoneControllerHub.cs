@@ -21,13 +21,6 @@ public sealed class PhoneControllerHub : MonoBehaviour
     private const double ConnectionTimeoutSeconds = 8.0;
     private const double DisconnectGraceSeconds = 2.0;
 
-    [Serializable]
-    private sealed class ConnectionConfig
-    {
-        public string signalingUrl;
-        public string hostKey;
-    }
-
     private sealed class SlotState
     {
         public readonly string Id;
@@ -35,6 +28,13 @@ public sealed class PhoneControllerHub : MonoBehaviour
         public RTCDataChannel Channel;
         // Track transport callbacks independently of the native channel object.
         public bool ChannelOpen;
+        public string PhoneId = "", AcceptedPhoneId = "";
+        public bool RegistrationCandidate;
+        public int PreserveRotations;
+        public int AxisOrder = 1, AxisSigns, AxisRevision, PendingAxisRevision;
+        public double AxisSendAt;
+        public string AxisAction = "axis.configure";
+        public int PendingOrder, PendingSigns;
         public readonly List<RTCIceCandidateInit> PendingCandidates = new List<RTCIceCandidateInit>();
         public bool RemoteDescriptionSet;
         public bool CloseRequested;
@@ -44,7 +44,10 @@ public sealed class PhoneControllerHub : MonoBehaviour
         public MotionSample LatestSample;
         public bool HasSample;
         public uint LatestSequence;
+        public long Packets;
         public bool HasSequence;
+        public bool HasAxisSequenceFloor;
+        public uint AxisSequenceFloor;
         public int RecenterVersion;
         public int ConnectionGeneration;
         public ushort LatestRecenterSequence;
@@ -73,8 +76,61 @@ public sealed class PhoneControllerHub : MonoBehaviour
 
     private CancellationTokenSource cancellation;
     private ClientWebSocket signalingSocket;
-    private ConnectionConfig config;
+    private readonly PhoneServerDiscovery discovery = new PhoneServerDiscovery();
     private GameObject overlay;
+    private double nextTrafficSnapshot;
+    private static readonly string RuntimeDirectory = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".kosen-chanbara");
+
+    private int registrationSlot = -1, registrationGeneration;
+    public bool RegistrationReady(ControllerSlot slot) => registrationSlot == (int)slot && GetSlot(slot).RegistrationCandidate && IsConnected(slot);
+    public Texture2D GetQrTexture(ControllerSlot slot) => GetSlot(slot).QrTexture;
+    public string GetRegistrationStatus(ControllerSlot slot) => GetSlot(slot).Status;
+    public int GetAxisOrder(ControllerSlot slot) => GetSlot(slot).AxisOrder;
+    public int GetAxisSigns(ControllerSlot slot) => GetSlot(slot).AxisSigns;
+    public bool AxisApplied(ControllerSlot slot) => GetSlot(slot).PendingAxisRevision == 0;
+    public void BeginRegistration(ControllerSlot controllerSlot)
+    {
+        EndRegistration(false);
+        registrationSlot = (int)controllerSlot;
+        SlotState slot = GetSlot(controllerSlot);
+        registrationGeneration = slot.ConnectionGeneration;
+        slot.RegistrationCandidate = false;
+        RotateRegistrationQr(slot);
+    }
+    public void EndRegistration(bool commit)
+    {
+        if (registrationSlot < 0) return;
+        SlotState slot = slots[registrationSlot];
+        if (commit && slot.RegistrationCandidate && slot.PhoneId.Length > 0)
+        {
+            slot.AcceptedPhoneId = slot.PhoneId;
+            PlayerPrefs.SetString("PhoneController." + slot.Id, slot.PhoneId); PlayerPrefs.Save();
+        }
+        else if (slot.RegistrationCandidate && slot.PhoneId != slot.AcceptedPhoneId) ClosePeer(slot, "登録をキャンセルしました");
+        slot.RegistrationCandidate = false;
+        registrationSlot = -1;
+        RotateRegistrationQr(slot);
+    }
+    private void RotateRegistrationQr(SlotState slot)
+    {
+        slot.PreserveRotations++;
+        if (cancellation != null) _ = SendSignalAsync(new { type = "slot.rotate", slot = slot.Id }, cancellation.Token);
+    }
+    public void ConfigureAxes(ControllerSlot controllerSlot, int order, int signs, string action = "axis.configure")
+    {
+        SlotState slot = GetSlot(controllerSlot);
+        if (order < 0 || order > 5 || signs < 0 || signs > 7) return;
+        slot.PendingOrder = order; slot.PendingSigns = signs; slot.AxisAction = action;
+        slot.PendingAxisRevision = Math.Max(slot.PendingAxisRevision, slot.AxisRevision) + 1;
+        slot.AxisSendAt = 0;
+    }
+    private void SendControl(SlotState slot, object command)
+    {
+        if (slot.Channel == null) return;
+        try { slot.Channel.Send(Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(command))); }
+        catch (Exception e) { Debug.LogWarning("スマホ設定の送信に失敗: " + e.Message); }
+    }
 
     public bool OverlayVisible => overlay != null && overlay.activeSelf;
 
@@ -125,19 +181,13 @@ public sealed class PhoneControllerHub : MonoBehaviour
         DontDestroyOnLoad(gameObject);
         Application.runInBackground = true;
         cancellation = new CancellationTokenSource();
-        config = LoadConfiguration();
+        foreach (SlotState slot in slots) slot.AcceptedPhoneId = PlayerPrefs.GetString("PhoneController." + slot.Id, "");
         CreateOverlay();
     }
 
     private void Start()
     {
         StartCoroutine(WebRTC.Update());
-
-        if (config == null || string.IsNullOrWhiteSpace(config.signalingUrl) || string.IsNullOrWhiteSpace(config.hostKey))
-        {
-            Debug.LogError("Create StreamingAssets/controller-connection.json", this);
-            return;
-        }
 
         _ = RunSignalingLoopAsync(cancellation.Token);
     }
@@ -153,6 +203,11 @@ public sealed class PhoneControllerHub : MonoBehaviour
         for (int index = 0; index < slots.Length; index++)
         {
             SlotState slot = slots[index];
+            if (slot.ChannelOpen && slot.PendingAxisRevision > 0 && now >= slot.AxisSendAt)
+            {
+                slot.AxisSendAt = now + .3;
+                SendControl(slot, new { type = slot.AxisAction, order = slot.PendingOrder, signs = slot.PendingSigns, request = slot.PendingAxisRevision });
+            }
 
             if (slot.CloseRequested)
             {
@@ -172,6 +227,22 @@ public sealed class PhoneControllerHub : MonoBehaviour
             }
         }
 
+        if (now >= nextTrafficSnapshot)
+        {
+            nextTrafficSnapshot = now + 1.0;
+            try
+            {
+                Directory.CreateDirectory(RuntimeDirectory);
+                var snapshot = new JObject { ["time"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 };
+                foreach (SlotState slot in slots)
+                    snapshot[slot.Id] = new JObject { ["packets"] = slot.Packets,
+                        ["age"] = slot.HasSample ? now - slot.LatestSample.ReceivedRealtime : -1,
+                        ["connected"] = IsChannelOpen(slot) };
+                File.WriteAllText(Path.Combine(RuntimeDirectory, "phone-traffic.json"), snapshot.ToString(Formatting.None));
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
         UpdateOverlay();
     }
 
@@ -213,6 +284,24 @@ public sealed class PhoneControllerHub : MonoBehaviour
         GetSlot(controllerSlot).RecenterVersion++;
     }
 
+    public void SendFeedback(ControllerSlot controllerSlot, float seconds)
+    {
+        SlotState slot = GetSlot(controllerSlot);
+        if (!IsChannelOpen(slot))
+            return;
+
+        int durationMs = Mathf.Clamp(Mathf.RoundToInt(seconds * 1000f), 1, 1000);
+        byte[] message = Encoding.UTF8.GetBytes($"{{\"type\":\"vibrate\",\"durationMs\":{durationMs}}}");
+        try
+        {
+            slot.Channel.Send(message);
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning($"Phone vibration send failed: {exception.Message}", this);
+        }
+    }
+
     public void RotateSlot(ControllerSlot controllerSlot)
     {
         SlotState slot = GetSlot(controllerSlot);
@@ -220,79 +309,65 @@ public sealed class PhoneControllerHub : MonoBehaviour
         slot.Status = "Rotating QR...";
     }
 
-    private ConnectionConfig LoadConfiguration()
-    {
-        ConnectionConfig loaded = null;
-        string path = Path.Combine(Application.streamingAssetsPath, "controller-connection.json");
-
-        try
-        {
-            if (File.Exists(path))
-            {
-                loaded = JsonUtility.FromJson<ConnectionConfig>(File.ReadAllText(path));
-            }
-        }
-        catch (Exception exception)
-        {
-            Debug.LogError($"Could not read phone controller config: {exception.Message}");
-        }
-
-        if (loaded == null)
-        {
-            loaded = new ConnectionConfig();
-        }
-
-        string urlOverride = Environment.GetEnvironmentVariable("KOSEN_CONTROLLER_SIGNALING_URL");
-        string keyOverride = Environment.GetEnvironmentVariable("KOSEN_CONTROLLER_HOST_KEY");
-        if (!string.IsNullOrWhiteSpace(urlOverride))
-        {
-            loaded.signalingUrl = urlOverride;
-        }
-        if (!string.IsNullOrWhiteSpace(keyOverride))
-        {
-            loaded.hostKey = keyOverride;
-        }
-
-        return loaded;
-    }
-
     private async Task RunSignalingLoopAsync(CancellationToken token)
     {
         while (!token.IsCancellationRequested)
         {
-            ClientWebSocket socket = new ClientWebSocket();
-            try
+            var completion = new TaskCompletionSource<PhoneServerEndpoint>();
+            using (token.Register(() => completion.TrySetCanceled()))
             {
-                await socket.ConnectAsync(new Uri(config.signalingUrl), token);
-                signalingSocket = socket;
-                await SendSignalAsync(new { type = "host.create", hostKey = config.hostKey }, token);
-                await ReceiveSignalingAsync(socket, token);
-            }
-            catch (OperationCanceledException) when (token.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception exception)
-            {
-                Debug.LogWarning($"Phone controller signaling reconnect: {exception.Message}");
-            }
-            finally
-            {
-                if (signalingSocket == socket)
+                StartCoroutine(discovery.Find((endpoint, error) => {
+                    if (error != null) Debug.LogWarning(error, this);
+                    completion.TrySetResult(endpoint);
+                }));
+                PhoneServerEndpoint target;
+                try { target = await completion.Task; }
+                catch (OperationCanceledException) { break; }
+                if (target == null)
                 {
-                    signalingSocket = null;
+                    try { await Task.Delay(TimeSpan.FromSeconds(2), token); }
+                    catch (OperationCanceledException) { break; }
+                    continue;
                 }
-                socket.Dispose();
-            }
 
-            receivedSignals.Enqueue("{\"type\":\"host.disconnected\"}");
-            try
-            {
-                await Task.Delay(TimeSpan.FromSeconds(2), token);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
+                ClientWebSocket socket = new ClientWebSocket();
+                try
+                {
+                    using (var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(token))
+                    {
+                        connectTimeout.CancelAfter(TimeSpan.FromSeconds(8));
+                        await socket.ConnectAsync(new Uri(target.Url), connectTimeout.Token);
+                    }
+                    signalingSocket = socket;
+                    await SendSignalAsync(new { type = "host.create", hostKey = target.HostKey }, token);
+                    await ReceiveSignalingAsync(socket, token);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception exception)
+                {
+                    Debug.LogWarning($"Phone controller signaling reconnect: {exception.Message}");
+                }
+                finally
+                {
+                    if (signalingSocket == socket)
+                    {
+                        signalingSocket = null;
+                    }
+                    socket.Dispose();
+                }
+
+                receivedSignals.Enqueue("{\"type\":\"host.disconnected\"}");
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(2), token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
             }
         }
     }
@@ -303,11 +378,14 @@ public sealed class PhoneControllerHub : MonoBehaviour
         while (socket.State == WebSocketState.Open && !token.IsCancellationRequested)
         {
             using (MemoryStream stream = new MemoryStream())
+            using (var receiveTimeout = CancellationTokenSource.CreateLinkedTokenSource(token))
             {
+                // Parent heartbeat detects a silent LAN disconnect and triggers discovery.
+                receiveTimeout.CancelAfter(TimeSpan.FromSeconds(15));
                 WebSocketReceiveResult result;
                 do
                 {
-                    result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), token);
+                    result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), receiveTimeout.Token);
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
                         return;
@@ -381,7 +459,7 @@ public sealed class PhoneControllerHub : MonoBehaviour
             case "peer.joined":
             {
                 SlotState slot = GetSlot(message.Value<string>("slot"));
-                if (slot != null)
+                if (slot != null && (registrationSlot == Array.IndexOf(slots, slot) || slot.AcceptedPhoneId.Length > 0))
                 {
                     ClosePeer(slot, "Phone joined");
                     slot.Status = "Negotiating direct LAN link...";
@@ -427,7 +505,8 @@ public sealed class PhoneControllerHub : MonoBehaviour
                 SlotState slot = GetSlot(message.Value<string>("slot"));
                 if (slot != null)
                 {
-                    ClosePeer(slot, "Waiting for new QR scan");
+                    if (slot.PreserveRotations == 0) ClosePeer(slot, "Waiting for new QR scan");
+                    else slot.PreserveRotations--;
                     ApplySlotPresentation(slot, message);
                 }
                 break;
@@ -577,8 +656,8 @@ public sealed class PhoneControllerHub : MonoBehaviour
                 return;
             }
 
-            slot.ChannelOpen = true;
-            slot.Status = "Connected (direct LAN)";
+            // Identity arrives over the actual data channel, not the signaling socket.
+            slot.Status = "スマホを確認しています";
             slot.ConnectionDeadline = 0;
             slot.DisconnectDeadline = 0;
         };
@@ -703,15 +782,56 @@ public sealed class PhoneControllerHub : MonoBehaviour
     private void HandleDataChannelMessage(SlotState slot, byte[] bytes)
     {
         double now = Time.realtimeSinceStartupAsDouble;
-        if (!MotionPacketCodec.TryDecodeMotion(bytes, now, out MotionSample sample))
+        if (bytes != null && bytes.Length > 0 && bytes.Length <= 1024 && bytes[0] == (byte)'{')
+        {
+            try
+            {
+                JObject message = JObject.Parse(Encoding.UTF8.GetString(bytes));
+                string type = message.Value<string>("type");
+                if (type == "controller.hello")
+                {
+                    string id = message.Value<string>("deviceId") ?? "";
+                    if (id.Length < 8 || id.Length > 80) return;
+                    bool enrolling = registrationSlot == Array.IndexOf(slots, slot) && slot.ConnectionGeneration != registrationGeneration;
+                    if (!enrolling && id != slot.AcceptedPhoneId) { ClosePeer(slot, "登録待ちの画面から接続してください"); return; }
+                    slot.PhoneId = id; slot.ChannelOpen = true; slot.RegistrationCandidate = enrolling;
+                    slot.ConnectionDeadline = 0; slot.Status = "スマホがつながりました";
+                    SendControl(slot, new { type = "controller.ready" });
+                }
+                if ((type == "controller.hello" || type == "axis.state") && slot.ChannelOpen)
+                {
+                    int order = message.Value<int?>("order") ?? -1, signs = message.Value<int?>("signs") ?? -1;
+                    if (order >= 0 && order < 6 && signs >= 0 && signs < 8)
+                    {
+                        slot.AxisOrder = order; slot.AxisSigns = signs;
+                        int request = message.Value<int?>("request") ?? 0;
+                        if (request > 0 && request == slot.PendingAxisRevision && order == slot.PendingOrder && signs == slot.PendingSigns)
+                        {
+                            slot.AxisRevision = request; slot.PendingAxisRevision = 0; slot.RecenterVersion++; slot.HasSample = false;
+                            uint? next = message.Value<uint?>("nextSequence");
+                            slot.HasAxisSequenceFloor = next.HasValue; slot.AxisSequenceFloor = next ?? 0;
+                        }
+                    }
+                }
+            }
+            catch (Exception e) when (e is JsonException || e is FormatException || e is ArgumentException) { }
+            return;
+        }
+        if (!slot.ChannelOpen || !MotionPacketCodec.TryDecodeMotion(bytes, now, out MotionSample sample))
         {
             return;
+        }
+        if (slot.HasAxisSequenceFloor)
+        {
+            if (sample.Sequence != slot.AxisSequenceFloor && !MotionPacketCodec.IsNewerSequence(sample.Sequence, slot.AxisSequenceFloor)) return;
+            slot.HasAxisSequenceFloor = false;
         }
         if (slot.HasSequence && !MotionPacketCodec.IsNewerSequence(sample.Sequence, slot.LatestSequence))
         {
             return;
         }
 
+        slot.Packets++;
         slot.LatestSample = sample;
         slot.LatestSequence = sample.Sequence;
         slot.HasSample = true;
@@ -734,12 +854,15 @@ public sealed class PhoneControllerHub : MonoBehaviour
         slot.ConnectionGeneration++;
         slot.Status = status;
         slot.ChannelOpen = false;
+        slot.PhoneId = ""; slot.RegistrationCandidate = false;
+        slot.PendingAxisRevision = 0;
         slot.CloseRequested = false;
         slot.ConnectionDeadline = 0;
         slot.DisconnectDeadline = 0;
         slot.IceConnectionState = RTCIceConnectionState.New;
         slot.HasSample = false;
         slot.HasSequence = false;
+        slot.HasAxisSequenceFloor = false;
         slot.LatestRecenterSequence = 0;
         slot.HasRecenterSequence = false;
         slot.RecenterVersion++;
@@ -849,6 +972,7 @@ public sealed class PhoneControllerHub : MonoBehaviour
 
     private void OnDestroy()
     {
+        discovery.Dispose();
         if (instance == this)
         {
             instance = null;

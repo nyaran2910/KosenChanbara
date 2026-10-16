@@ -9,9 +9,10 @@ public sealed class DuelView
     private readonly Camera camera;
     private readonly Transform player, opponent;
     private Transform focusTarget;
+    private Transform previousFocusTarget;
     private bool smoothFocus, focusInitialized;
     private double lastTick = -1;
-    private Vector3 focusPosition, focusVelocity, cameraPosition, cameraVelocity, previousPlayerPosition;
+    private Vector3 focusPosition, focusVelocity, cameraPosition, cameraVelocity, previousPlayerPosition, previousTargetPosition;
     private Quaternion focusRotation;
     private readonly Vector3 basePosition;
     private readonly Quaternion baseRotation;
@@ -19,6 +20,9 @@ public sealed class DuelView
     private double shakeStart = -100;
     private float strength;
     private float bodyRoll, bodyPitch;
+    private double attackImpactStart = -100;
+    private Vector3 attackDirection, attackFromPosition, attackFromAngles;
+    private float attackFromFov;
     public const float MaximumReactionRollDegrees = 7f;
     public const float MaximumReactionPitchDegrees = 4f;
     private readonly Renderer[] body;
@@ -102,10 +106,39 @@ public sealed class DuelView
         swapped = false;
     }
     public void Kick(double now, float amount) { strength = Mathf.Min(1f, amount + (now - shakeStart < 0.12 ? strength * 0.3f : 0f)); shakeStart = now; }
+    public void AttackImpact(double now, Vector3 worldCutDirection, float hitStopSeconds)
+    {
+        SampleAttackImpact(now, out attackFromPosition, out attackFromAngles, out attackFromFov);
+        attackDirection = player.InverseTransformDirection(worldCutDirection.normalized);
+        attackImpactStart = now + Mathf.Max(0f, hitStopSeconds);
+    }
+
+    private void SampleAttackImpact(double now, out Vector3 position, out Vector3 angles, out float fov)
+    {
+        if (now >= attackImpactStart + .28d)
+        {
+            position = angles = Vector3.zero; fov = 0f;
+            return;
+        }
+        float t = Mathf.Clamp01((float)(now - attackImpactStart) / .28f);
+        float pulse = Mathf.Sin(t * Mathf.PI);
+        float carry = 1f - Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(t / .3f));
+        position = Vector3.ClampMagnitude(attackFromPosition * carry
+            + new Vector3(attackDirection.x * .06f, -.025f * Mathf.Abs(attackDirection.y), .18f) * pulse, .22f);
+        angles = attackFromAngles * carry
+            + new Vector3(-attackDirection.y * 1.5f - .5f, 0f, -attackDirection.x * 2f) * pulse;
+        angles.x = Mathf.Clamp(angles.x, -2.5f, 2.5f);
+        angles.z = Mathf.Clamp(angles.z, -3f, 3f);
+        fov = Mathf.Min(3f, attackFromFov * carry + 2.5f * pulse);
+    }
+
     public void CopyReactionFrom(DuelView other, double now)
     {
         shakeStart = other.shakeStart; strength = other.strength;
-        bodyRoll = other.bodyRoll; bodyPitch = other.bodyPitch; Tick(now);
+        bodyRoll = other.bodyRoll; bodyPitch = other.bodyPitch;
+        attackImpactStart = other.attackImpactStart; attackDirection = other.attackDirection;
+        attackFromPosition = other.attackFromPosition; attackFromAngles = other.attackFromAngles;
+        attackFromFov = other.attackFromFov; Tick(now);
     }
     public void SetBodyRoll(float degrees)
         => bodyRoll = Mathf.Clamp(degrees * .18f, -MaximumReactionRollDegrees, MaximumReactionRollDegrees);
@@ -126,12 +159,14 @@ public sealed class DuelView
         float decay = (1f - t) * (1f - t) * strength;
         float oscillation = Mathf.Sin(t * Mathf.PI * 5f);
         Vector3 shake = new Vector3(oscillation, Mathf.Sin(t * Mathf.PI * 7f) * 0.65f, 0f) * (0.045f * decay);
+        SampleAttackImpact(now, out Vector3 attackPosition, out Vector3 attackAngles, out float attackFov);
+        shake += attackPosition;
         // Track the opponent while the body settles into its new facing angle.
         // The camera's position orbits with the player, so each exchange reveals
         // another part of the stage without losing the opponent from the frame.
         Transform targetTransform = focusTarget != null ? focusTarget : opponent;
         Quaternion shakeRotation = Quaternion.Euler(oscillation * decay * 0.5f, 0f, oscillation * decay * 1.1f)
-            * Quaternion.Euler(bodyPitch, 0f, bodyRoll);
+            * Quaternion.Euler(bodyPitch + attackAngles.x, 0f, bodyRoll + attackAngles.z);
         if (smoothFocus)
         {
             Vector3 desiredPosition = player.TransformPoint(walkingView ? new Vector3(.6f, 2f, -6f) : basePosition);
@@ -140,25 +175,30 @@ public sealed class DuelView
             {
                 cameraPosition = desiredPosition; focusPosition = desiredFocus;
                 previousPlayerPosition = player.position;
+                previousFocusTarget = targetTransform;
+                previousTargetPosition = targetTransform.position;
                 focusRotation = Quaternion.LookRotation(focusPosition - cameraPosition);
                 focusVelocity = cameraVelocity = Vector3.zero; focusInitialized = true;
             }
             float dt = lastTick < 0 ? 0f : Mathf.Clamp((float)(now - lastTick), 0f, .1f);
             if (dt > 0f)
             {
-                // Recoil moves both fighters together. Carry the camera and
-                // its remembered focus with the player before smoothing the
-                // relative orbit/target change, so repeated pushes cannot
-                // leave the viewpoint metres behind the combatants.
-                Vector3 translation = player.position - previousPlayerPosition;
-                cameraPosition += translation;
-                focusPosition += translation;
+                // The camera orbit follows the player; the aim point follows
+                // its target. Their recoil translations can differ, so track
+                // each delta independently to avoid accumulating focus lag.
+                Vector3 playerDelta = player.position - previousPlayerPosition;
+                Vector3 targetDelta = previousFocusTarget == targetTransform
+                    ? targetTransform.position - previousTargetPosition : playerDelta;
+                cameraPosition += playerDelta;
+                focusPosition += walkingView ? playerDelta : targetDelta;
                 focusPosition = Vector3.SmoothDamp(focusPosition, desiredFocus, ref focusVelocity, .12f, Mathf.Infinity, dt);
                 cameraPosition = Vector3.SmoothDamp(cameraPosition, desiredPosition, ref cameraVelocity, .16f, Mathf.Infinity, dt);
                 Quaternion desiredRotation = Quaternion.LookRotation(focusPosition - cameraPosition);
                 focusRotation = Quaternion.Slerp(focusRotation, desiredRotation, 1f - Mathf.Exp(-dt / .1f));
             }
             previousPlayerPosition = player.position;
+            previousFocusTarget = targetTransform;
+            previousTargetPosition = targetTransform.position;
             camera.transform.SetPositionAndRotation(cameraPosition + player.rotation * shake, focusRotation * shakeRotation);
         }
         else
@@ -168,7 +208,7 @@ public sealed class DuelView
             camera.transform.localRotation = Quaternion.LookRotation(target - basePosition) * shakeRotation;
         }
         lastTick = now;
-        camera.fieldOfView = baseFov + decay * 4f;
+        camera.fieldOfView = baseFov + decay * 4f + attackFov;
         if (cinematic > 0)
         {
             Vector3 portrait = new Vector3(3.2f, 1.8f, 4.8f);
@@ -187,7 +227,7 @@ public sealed class DuelView
         smoothFocus = smoothing;
         focusTarget = target != null ? target : opponent;
     }
-    public void Reset() { walkingView = false; shakeStart = -100; strength = bodyRoll = bodyPitch = 0f; focusInitialized = false; lastTick = -1; Tick(0); Restore(); }
+    public void Reset() { attackImpactStart = -100; attackDirection = attackFromPosition = attackFromAngles = Vector3.zero; attackFromFov = 0f; walkingView = false; shakeStart = -100; strength = bodyRoll = bodyPitch = 0f; focusInitialized = false; lastTick = -1; Tick(0); Restore(); }
     public void Dispose()
     {
         RenderPipelineManager.beginCameraRendering -= BeginCamera; RenderPipelineManager.endCameraRendering -= EndCamera;

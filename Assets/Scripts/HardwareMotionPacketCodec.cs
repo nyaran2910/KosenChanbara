@@ -1,3 +1,4 @@
+using SchoolFestival.Combat;
 using System;
 using System.Collections.Generic;
 using UnityEngine;
@@ -30,7 +31,17 @@ public static class HardwareMotionPacketCodec
         if (!BitConverter.IsLittleEndian) Array.Reverse(timestamp);
         Array.Copy(timestamp, 0, phonePacket, 8, 8);
         Array.Copy(bytes, 20, phonePacket, 16, 40);
-        return MotionPacketCodec.TryDecodeMotion(phonePacket, receivedRealtime, out sample);
+        if (!MotionPacketCodec.TryDecodeMotion(phonePacket, receivedRealtime, out sample)) return false;
+        // Normalize the controller's grip basis once here so USB, UDP, menu
+        // input and sword pose all consume the same sample frame. Phone input
+        // remains in its own unchanged sensor frame.
+        sample = new MotionSample(HardwareControllerFrame.Rotation(sample.Rotation),
+            HardwareControllerFrame.Vector(sample.AngularVelocityDegrees),
+            HardwareControllerFrame.Vector(sample.LinearAcceleration), sample.GuardHeld,
+            sample.OrientationValid, sample.GyroscopeValid, sample.AccelerationValid,
+            sample.Sequence, sample.RecenterSequence, sample.BrowserTimestampMilliseconds,
+            sample.ReceivedRealtime, sample.RecenterHeld);
+        return true;
     }
 
     public static uint Crc32(byte[] bytes, int count)
@@ -53,6 +64,7 @@ public static class HardwareMotionPacketCodec
 public sealed class HardwareMotionStream
 {
     public const double RestartAfterSeconds = 0.5;
+    private const double ClockAdvanceToleranceMilliseconds = 10000;
     private readonly byte group;
     private readonly List<byte> buffer = new List<byte>(2048);
     private readonly MotionSample[] previous = new MotionSample[2];
@@ -83,17 +95,24 @@ public sealed class HardwareMotionStream
             consumed += HardwareMotionPacketCodec.PacketLength;
             if (packetGroup != group) continue;
             int index = (int)slot;
-            bool restarted = !hasPrevious[index] || realtime - previous[index].ReceivedRealtime > RestartAfterSeconds;
+            bool restarted = !hasPrevious[index];
             uint millis = (uint)sample.BrowserTimestampMilliseconds;
             if (!restarted)
             {
-                if (!MotionPacketCodec.IsNewerSequence(sample.Sequence, previous[index].Sequence)) continue;
+                bool newerSequence = MotionPacketCodec.IsNewerSequence(sample.Sequence, previous[index].Sequence);
                 uint elapsed = unchecked(millis - lastMillis[index]);
-                // millis() may wrap; backward time or impossible jumps within a live stream are invalid.
-                if (elapsed > 10000) continue;
-                extendedMillis[index] += elapsed;
+                bool plausibleClock = IsPlausibleClockAdvance(elapsed, realtime - previous[index].ReceivedRealtime);
+                if (!newerSequence || !plausibleClock)
+                {
+                    // Silence alone is not a reboot. Accept a resumed forward stream;
+                    // after silence, a counter or clock rollback establishes a new epoch.
+                    if (sample.Sequence == previous[index].Sequence || realtime - previous[index].ReceivedRealtime <= RestartAfterSeconds)
+                        continue;
+                    restarted = true;
+                }
+                else extendedMillis[index] += elapsed;
             }
-            else extendedMillis[index] = millis;
+            if (restarted) extendedMillis[index] = millis;
             lastMillis[index] = millis;
             sample = new MotionSample(sample.Rotation, sample.AngularVelocityDegrees, sample.LinearAcceleration,
                 sample.GuardHeld, sample.OrientationValid, sample.GyroscopeValid, sample.AccelerationValid,
@@ -104,4 +123,13 @@ public sealed class HardwareMotionStream
         }
         if (consumed > 0) buffer.RemoveRange(0, consumed);
     }
+
+    public static bool IsPlausibleClockAdvance(uint elapsedMilliseconds, double receivedGapSeconds)
+    {
+        if (receivedGapSeconds < 0) return false;
+        double maximum = Math.Max(ClockAdvanceToleranceMilliseconds, receivedGapSeconds * 1000.0 + 2000.0);
+        return elapsedMilliseconds <= maximum;
+    }
+
+    public static uint ClockTicks(double extendedMilliseconds) => unchecked((uint)(long)extendedMilliseconds);
 }

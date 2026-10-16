@@ -16,18 +16,19 @@ namespace SchoolFestival.Combat
         public static CombatExchangeResult Resolve(AttackKind firstKind, AttackKind secondKind,
             CombatPose first, CombatPose second, bool firstGuard, bool secondGuard,
             bool firstRecovering = false, bool secondRecovering = false,
-            bool firstInvulnerable = false, bool secondInvulnerable = false)
+            bool firstInvulnerable = false, bool secondInvulnerable = false,
+            float firstHitStart = 0f, float secondHitStart = 0f)
         {
             // Recovery prevents this fighter's offence, not the opponent's turn
             // or a fresh defensive guard.
             if (firstRecovering) firstKind = AttackKind.None;
             if (secondRecovering) secondKind = AttackKind.None;
-            CombatContactResult a = CombatContact.Resolve(firstKind, first, second, secondGuard);
-            CombatContactResult b = CombatContact.Resolve(secondKind, second, first, firstGuard);
+            CombatContactResult a = CombatContact.Resolve(firstKind, first, second, secondGuard, firstHitStart);
+            CombatContactResult b = CombatContact.Resolve(secondKind, second, first, firstGuard, secondHitStart);
             if (secondInvulnerable && CombatReaction.IsHit(a.Outcome)) a = default;
             if (firstInvulnerable && CombatReaction.IsHit(b.Outcome)) b = default;
             if (firstKind != AttackKind.None && secondKind != AttackKind.None
-                && CombatContact.TryBladesClash(first, second, out float clash, firstKind, secondKind)
+                && CombatContact.TryBladesClash(first, second, out float clash, firstKind, secondKind, Mathf.Max(firstHitStart, secondHitStart))
                 && (a.Outcome == CombatOutcome.None || clash <= a.Fraction)
                 && (b.Outcome == CombatOutcome.None || clash <= b.Fraction))
                 return new CombatExchangeResult(new CombatResult(CombatOutcome.Clash, -1, -1, 0f, contactFraction: clash), clash);
@@ -45,7 +46,7 @@ namespace SchoolFestival.Combat
                 ? new CombatResult(selected.Outcome, attacker, attacker, -direction * DuelMatch.GuardPush, kind, selected.Fraction)
                 : new CombatResult(selected.Outcome, attacker, 1 - attacker,
                     direction * (selected.Outcome == CombatOutcome.GuardBreak ? DuelMatch.GuardBreakPush
-                        : kind == AttackKind.Thrust ? DuelMatch.ThrustPush : DuelMatch.HitPush), kind, selected.Fraction);
+                        : DuelMatch.HitPush), kind, selected.Fraction);
             return new CombatExchangeResult(result, selected.Fraction);
         }
     }
@@ -73,7 +74,7 @@ namespace SchoolFestival.Combat
             => result.HitStopSeconds + RecoverySeconds;
         public static Vector3 Direction(AttackKind kind, CombatPose attack)
         {
-            Vector3 direction = kind == AttackKind.Thrust ? attack.Forward : CombatContact.IncomingCutDirection(attack);
+            Vector3 direction = CombatContact.IncomingCutDirection(attack);
             return direction.sqrMagnitude > .0001f ? direction.normalized : attack.Forward.normalized;
         }
     }

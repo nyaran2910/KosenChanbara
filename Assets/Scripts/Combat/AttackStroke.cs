@@ -2,19 +2,21 @@ using UnityEngine;
 
 namespace SchoolFestival.Combat
 {
-    public enum AttackKind { None, Cut, Thrust }
+    public enum AttackKind { None, Cut }
 
     // A stroke follows observed movement, not an absolute raised-sword pose.
     // These recognition thresholds are project tuning, not Nintendo constants.
     public sealed class AttackStroke
     {
-        public const double CutSeconds = .9, ThrustSeconds = ThrustPose.DurationSeconds;
-        public const double QuietSeconds = .06, ReverseReadySeconds = .12;
-        public const float ThrustAngle = 25f, MinimumCutSweep = 25f, MinimumCutSpeed = 75f, MinimumCutMotion = .25f, ReverseCutSpeed = 150f, RearmSideAngle = 25f, CutForwardAngle = 65f;
-        private bool baseline, previousGuard, consumed, reversePrepared;
+        public const double CutSeconds = .9;
+        public const float MinimumHitSweep = 60f;
+        public float HitStartFraction { get; private set; } = float.PositiveInfinity;
+        public const double QuietSeconds = .06;
+        public const float MinimumCutSweep = 25f, MinimumCutSpeed = 150f, MinimumCutMotion = .25f, RearmSideAngle = 25f, CutForwardAngle = 65f;
+        private bool baseline, previousGuard, consumed, oppositeSideReached;
         private int generation;
-        private float previousAngle, travel, bladeTravel, takebackTravel, requiredSpeed = MinimumCutSpeed;
-        private double lastTime, until, thrustStartedAt, quietSince = double.NaN;
+        private float previousAngle, travel, bladeTravel, takebackTravel;
+        private double lastTime, until, quietSince = double.NaN;
         private Vector3 swingAxis, prepareSide, previousForward = Vector3.forward;
         public AttackKind Kind { get; private set; }
         public AttackKind StartedKind { get; private set; }
@@ -22,10 +24,11 @@ namespace SchoolFestival.Combat
 
         public void Reset()
         {
+            HitStartFraction = float.PositiveInfinity;
             baseline = consumed = false;
             Kind = StartedKind = AttackKind.None;
             travel = bladeTravel = takebackTravel = 0f; swingAxis = prepareSide = Vector3.zero; quietSince = double.NaN;
-            reversePrepared = false; requiredSpeed = MinimumCutSpeed;
+            oppositeSideReached = false;
         }
 
         public void Consume()
@@ -54,6 +57,7 @@ namespace SchoolFestival.Combat
 
         public bool Update(CombatInput input, CombatPose pose, double now, bool blocked = false)
         {
+            HitStartFraction = float.PositiveInfinity;
             StartedKind = AttackKind.None;
             if (!input.Valid) { Reset(); return false; }
             if (!baseline || generation != input.PoseGeneration || now < lastTime)
@@ -61,7 +65,6 @@ namespace SchoolFestival.Combat
                 Reset(); baseline = true;
                 generation = input.PoseGeneration; previousGuard = input.GuardHeld;
                 previousAngle = input.ForwardAngle; lastTime = now; previousForward = pose.Forward;
-                if (!blocked && input.ThrustRequested && !input.GuardHeld && input.ForwardAngle <= ThrustAngle) StartThrust(now);
                 return AttackAllowed(now);
             }
             if (previousGuard != input.GuardHeld)
@@ -76,7 +79,6 @@ namespace SchoolFestival.Combat
                 Quaternion turn = Quaternion.FromToRotation(previousForward, pose.Forward);
                 swingAxis = turn * swingAxis; prepareSide = turn * prepareSide;
                 previousForward = pose.Forward;
-                if (!blocked && !input.GuardHeld && input.ThrustRequested && input.ForwardAngle <= ThrustAngle) StartThrust(now);
                 return AttackAllowed(now);
             }
             double elapsed = now - lastTime;
@@ -88,7 +90,7 @@ namespace SchoolFestival.Combat
             float measuredSpeed = elapsed > .000001 ? step / (float)elapsed : input.AngularSpeed;
             float speed = Mathf.Min(input.AngularSpeed, measuredSpeed);
             Vector3 axis = Vector3.Cross(pose.PreviousBlade, pose.Blade).normalized;
-            if (Kind != AttackKind.Thrust && step >= .05f && swingAxis.sqrMagnitude > .5f && Vector3.Dot(axis, swingAxis) < .25f)
+            if (step >= .05f && swingAxis.sqrMagnitude > .5f && Vector3.Dot(axis, swingAxis) < .25f)
             {
                 if (Active || consumed) { consumed = true; Kind = AttackKind.None; travel = bladeTravel = 0f; }
                 else ResetMotion();
@@ -109,15 +111,6 @@ namespace SchoolFestival.Combat
                 else quietSince = double.NaN;
                 return false;
             }
-            if (Kind == AttackKind.Thrust && now > until) { Kind = AttackKind.None; consumed = true; }
-            if (input.ThrustRequested && input.ForwardAngle <= ThrustAngle && Kind != AttackKind.Thrust)
-            { StartThrust(now); return AttackAllowed(now); }
-            if (Kind == AttackKind.Thrust)
-            {
-                if (now > until || input.ForwardAngle > ThrustAngle) { Kind = AttackKind.None; consumed = true; }
-                return AttackAllowed(now);
-            }
-
             if (RearmFromPreparation(pose, speed)) return false;
 
             if (step < .05f || speed < 5f)
@@ -129,7 +122,7 @@ namespace SchoolFestival.Combat
             }
             quietSince = double.NaN;
             if (Kind == AttackKind.Cut && now > until) { Kind = AttackKind.None; consumed = true; }
-            if (Kind == AttackKind.Cut && speed < requiredSpeed)
+            if (Kind == AttackKind.Cut && speed < MinimumCutSpeed)
             { Kind = AttackKind.None; consumed = true; return false; }
             float approach = CombatContact.CutApproachFraction(pose);
             if (approach <= 0f)
@@ -139,27 +132,27 @@ namespace SchoolFestival.Combat
                 Kind = AttackKind.None; travel = bladeTravel = 0f;
                 return false;
             }
-            if (!consumed && !Active)
+            if (!consumed)
             {
-                if (speed >= requiredSpeed)
+                float before = travel;
+                if (speed >= MinimumCutSpeed)
                 {
                     if (travel <= 0f) prepareSide = Vector3.ProjectOnPlane(pose.PreviousBlade, pose.Forward).normalized;
                     travel += step * approach;
                     const float bladeMiddle = (CombatContact.BladeStart + CombatContact.BladeLength) * .5f;
-                    Vector3 before = pose.PreviousGrip + pose.PreviousBlade.normalized * bladeMiddle;
+                    Vector3 beforePoint = pose.PreviousGrip + pose.PreviousBlade.normalized * bladeMiddle;
                     Vector3 after = Vector3.Lerp(pose.PreviousGrip, pose.Grip, approach)
                         + Vector3.Slerp(pose.PreviousBlade, pose.Blade, approach).normalized * bladeMiddle;
-                    bladeTravel += Vector3.Distance(before, after);
+                    bladeTravel += Vector3.Distance(beforePoint, after);
                 }
                 else travel = bladeTravel = 0f;
-                if (travel >= MinimumCutSweep - .001f && bladeTravel >= MinimumCutMotion - .00001f && CrossesFront(pose))
+                if (travel >= MinimumHitSweep - .001f)
+                    HitStartFraction = Mathf.Clamp01((MinimumHitSweep - before) / Mathf.Max(step, .00001f));
+                if (!Active && travel >= MinimumCutSweep - .001f && bladeTravel >= MinimumCutMotion - .00001f && CrossesFront(pose))
                 { Kind = StartedKind = AttackKind.Cut; RememberCutSide(); until = now + CutSeconds; }
             }
             return AttackAllowed(now);
         }
-
-        private void StartThrust(double now)
-        { Kind = StartedKind = AttackKind.Thrust; until = now + ThrustSeconds; thrustStartedAt = now; consumed = false; travel = bladeTravel = takebackTravel = 0f; swingAxis = prepareSide = Vector3.zero; reversePrepared = false; requiredSpeed = MinimumCutSpeed; }
 
         private void RememberCutSide()
         {
@@ -169,8 +162,8 @@ namespace SchoolFestival.Combat
         }
 
         private void ResetMotion()
-        { Kind = AttackKind.None; consumed = reversePrepared = false; travel = bladeTravel = takebackTravel = 0f;
-          swingAxis = prepareSide = Vector3.zero; requiredSpeed = MinimumCutSpeed; quietSince = double.NaN; }
+        { Kind = AttackKind.None; consumed = oppositeSideReached = false; travel = bladeTravel = takebackTravel = 0f;
+          swingAxis = prepareSide = Vector3.zero; quietSince = double.NaN; }
 
         private bool RearmFromPreparation(CombatPose pose, float speed)
         {
@@ -178,6 +171,17 @@ namespace SchoolFestival.Combat
             float side = prepareSide.sqrMagnitude > .5f ? Vector3.Dot(pose.Blade.normalized, prepareSide) : 0f;
             float ready = Mathf.Sin(RearmSideAngle * Mathf.Deg2Rad);
             float oldSide = Vector3.Dot(pose.PreviousBlade.normalized, prepareSide);
+            // A completed cut has its own preparation on the far side. Once
+            // the sword has actually reached it, the return across the front
+            // is a fresh cut, including left/right and up/down reversals.
+            if (oldSide <= -ready + .00001f || side <= -ready + .00001f) oppositeSideReached = true;
+            if (oppositeSideReached && side > oldSide + .00001f && speed >= MinimumCutSpeed
+                && CombatContact.CutApproachFraction(pose) > 0f)
+            {
+                ResetMotion();
+                prepareSide = Vector3.ProjectOnPlane(pose.PreviousBlade, pose.Forward).normalized;
+                return false;
+            }
             if (side > oldSide + .00001f) takebackTravel += Vector3.Angle(pose.PreviousBlade, pose.Blade);
             else if (side < oldSide - .00001f) takebackTravel = 0f;
             bool reachedOldSide = side >= ready - .00001f && takebackTravel >= MinimumCutSweep - .001f;
@@ -187,15 +191,6 @@ namespace SchoolFestival.Combat
                 // Reaching the old preparation side is harmless in its entirety,
                 // even if a coarse return frame also crossed the opponent.
                 ResetMotion(); return true;
-            }
-            if (reversePrepared && speed >= ReverseCutSpeed && CombatContact.CutApproachFraction(pose) > 0f)
-            {
-                ResetMotion(); requiredSpeed = ReverseCutSpeed;
-                prepareSide = Vector3.ProjectOnPlane(pose.PreviousBlade, pose.Forward).normalized;
-                // The opposite stance already rested deliberately. Count this
-                // new fast stroke, so a coarse first frame cannot discard most
-                // of a short counter while fine frames still recognize it.
-                return false;
             }
             return false;
         }
@@ -215,15 +210,11 @@ namespace SchoolFestival.Combat
             if (Vector3.Dot(pose.Blade.normalized, prepareSide) >= Mathf.Sin(RearmSideAngle * Mathf.Deg2Rad)
                 && now - quietSince >= QuietSeconds)
             { ResetMotion(); return; }
-            float opposite = Vector3.Dot(pose.Blade.normalized, prepareSide);
-            if (opposite <= -Mathf.Sin(RearmSideAngle * Mathf.Deg2Rad)
-                && now - quietSince >= ReverseReadySeconds) reversePrepared = true;
+            if (Vector3.Dot(pose.Blade.normalized, prepareSide) <= -Mathf.Sin(RearmSideAngle * Mathf.Deg2Rad))
+                oppositeSideReached = true;
         }
 
-        private bool AttackAllowed(double now)
-            => Kind == AttackKind.Cut || Kind == AttackKind.Thrust
-                && now - thrustStartedAt >= ThrustPose.ChamberSeconds
-                && now - thrustStartedAt < ThrustPose.ChamberSeconds + ThrustPose.DriveSeconds;
+        private bool AttackAllowed(double now) => Kind == AttackKind.Cut;
 
         private static bool CrossesFront(CombatPose pose)
         {

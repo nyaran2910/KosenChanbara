@@ -1,3 +1,4 @@
+using SchoolFestival.Combat;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -75,7 +76,8 @@ public sealed class HardwareMotionPacketTests
         Write(bytes, 44, BitConverter.GetBytes(10f));
         Seal(bytes);
         object sample = DecodeSample(bytes);
-        Assert.That(Get<Vector3>(sample, "AngularVelocityDegrees"), Is.EqualTo(new Vector3(-40, -20, 10)));
+        Assert.That(Get<Vector3>(sample, "AngularVelocityDegrees"), Is.EqualTo(
+            HardwareControllerFrame.Vector(new Vector3(-40, -20, 10))));
         Assert.That(Get<Quaternion>(sample, "Rotation"), Is.EqualTo(Quaternion.identity));
         Assert.That(Get<bool>(sample, "GuardHeld"), Is.True);
         Assert.That(Get<uint>(sample, "Sequence"), Is.EqualTo(12u));
@@ -101,7 +103,7 @@ public sealed class HardwareMotionPacketTests
     }
 
     [Test]
-    public void SequenceAndMillisWrapWithoutSpeedSpikesAndRestartAfterSilence()
+    public void SequenceAndMillisWrapAndOrdinaryGapResumeWithoutRestart()
     {
         object stream = Activator.CreateInstance(Stream, new object[] { (byte)0 });
         Feed(stream, Packet(uint.MaxValue, uint.MaxValue - 9), 1);
@@ -113,9 +115,13 @@ public sealed class HardwareMotionPacketTests
         Assert.That(received.Count, Is.EqualTo(2));
         Feed(stream, Packet(1, 20), 1.05);
         Assert.That(received.Count, Is.EqualTo(3));
-        Feed(stream, Packet(0, 1), 2); // receiver/transmitter reboot
+        Feed(stream, Packet(2, 1040), 2); // a long packet gap with forward counters is not a reboot
         Assert.That(received.Count, Is.EqualTo(4));
-        Assert.That(restarted, Is.EqualTo(new[] { true, false, false, true }));
+        Feed(stream, Packet(0, 1), 3); // counter and clock rollback after silence is a reboot
+        Assert.That(received.Count, Is.EqualTo(5));
+        Feed(stream, Packet(1, 0), 4); // even with a forward sequence, a rolled-back clock is a reboot
+        Assert.That(received.Count, Is.EqualTo(6));
+        Assert.That(restarted, Is.EqualTo(new[] { true, false, false, false, true, true }));
     }
 
     private void Collect(object sample, bool reset) { received.Add(sample); restarted.Add(reset); }

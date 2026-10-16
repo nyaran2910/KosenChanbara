@@ -1,80 +1,67 @@
 using UnityEngine;
 
-// One step when directional speed crosses the threshold; slowing rearms input.
+// Angular motion, independent of the combat recenter and sword-tip pose.
+public static class MenuAngularMotion
+{
+    private static readonly Quaternion PhoneWorldToMenu = Quaternion.Euler(-90f, 0f, 0f);
+    public static Vector2 Project(Quaternion previous, Quaternion current, Vector3 gyro,
+        bool gyroValid, float seconds, bool phone)
+    {
+        Vector3 velocity;
+        if (gyroValid) velocity = phone ? PhoneWorldToMenu * (current * gyro) : gyro;
+        else
+        {
+            if (!(seconds > 0f)) return Vector2.zero;
+            Quaternion delta = phone ? PhoneWorldToMenu * current * Quaternion.Inverse(PhoneWorldToMenu * previous)
+                : Quaternion.Inverse(previous) * current;
+            delta.ToAngleAxis(out float angle, out Vector3 axis);
+            if (angle > 180f) angle -= 360f;
+            velocity = angle == 0f ? Vector3.zero : axis * (angle / seconds);
+        }
+        return new Vector2(velocity.y, -velocity.x);
+    }
+}
+
 public sealed class MenuGestureNavigation
 {
     public const float ThresholdDegreesPerSecond = 360f;
-    // controller.js keeps its world frame fixed while remapping local axes;
-    // MotionPacketCodec then reflects Z. Convert that world frame into menu
-    // coordinates without using the calibrated sword's current direction.
-    public static readonly Quaternion PhoneWorldToMenuWorld = Quaternion.Euler(-90f, 0f, 0f);
     private bool baseline, armed;
     private int generation = -1;
     private Quaternion previousRotation;
     private double previousSampleTime = double.NaN;
 
-    public void Reset()
-    {
-        baseline = armed = false;
-        previousSampleTime = double.NaN;
-    }
+    public void Reset() { baseline = armed = false; previousSampleTime = double.NaN; }
 
-    private static Vector2 ScreenVelocity(Vector3 worldAngularVelocity)
-        => new Vector2(worldAngularVelocity.y, -worldAngularVelocity.x);
+    public Vector2Int Read(Quaternion rotation, bool valid, bool guard, int poseGeneration, double time)
+        => Read(rotation, Vector3.zero, false, valid, guard, poseGeneration, time);
 
-    public Vector2Int Read(Quaternion sensorRotation, Vector3 localAngularVelocity, bool gyroscopeValid,
-        bool valid, bool guardHeld, int poseGeneration, double sampleTime,
-        bool phoneInput = false, Quaternion? hardwareReferenceRotation = null)
+    public Vector2Int Read(Quaternion rotation, Vector3 gyro, bool gyroValid, bool valid,
+        bool guard, int poseGeneration, double time, bool phone = false)
     {
         if (!valid) { Reset(); return Vector2Int.zero; }
-        Quaternion menuRotation = phoneInput
-            ? PhoneWorldToMenuWorld * sensorRotation
-            // BNO world heading depends on its startup pose. Use the same fixed
-            // reference as gameplay: pitch is X, horizontal swing is Y, twist is Z.
-            : Quaternion.Inverse(hardwareReferenceRotation ?? Quaternion.identity) * sensorRotation;
-        Vector2 velocity = gyroscopeValid
-            ? ScreenVelocity(menuRotation * localAngularVelocity) : Vector2.zero;
+        Vector2 velocity = MenuAngularMotion.Project(previousRotation, rotation, gyro, gyroValid, 0f, phone);
         if (!baseline || generation != poseGeneration)
         {
             baseline = true; generation = poseGeneration;
-            previousRotation = menuRotation; previousSampleTime = sampleTime;
-            armed = !guardHeld && Mathf.Max(Mathf.Abs(velocity.x), Mathf.Abs(velocity.y)) <= ThresholdDegreesPerSecond;
+            previousRotation = rotation; previousSampleTime = time;
+            armed = !guard && Mathf.Max(Mathf.Abs(velocity.x), Mathf.Abs(velocity.y)) <= ThresholdDegreesPerSecond + .001f;
             return Vector2Int.zero;
         }
-        double elapsed = sampleTime - previousSampleTime;
-        if (guardHeld) armed = false;
-        if (elapsed == 0) return Vector2Int.zero; // Same packet on another render frame.
-        Quaternion delta = menuRotation * Quaternion.Inverse(previousRotation);
-        previousRotation = menuRotation; previousSampleTime = sampleTime;
-        if (!(elapsed > 0 && elapsed <= .5))
-        {
-            armed = false;
-            return Vector2Int.zero;
-        }
-        if (!gyroscopeValid)
-        {
-            // Orientation-only remotes use the device clock, never render timing.
-            delta.ToAngleAxis(out float angle, out Vector3 axis);
-            if (angle > 180f) angle -= 360f;
-            velocity = angle == 0f ? Vector2.zero
-                : ScreenVelocity(axis * (angle / (float)elapsed));
-        }
-        if (guardHeld)
-        {
-            armed = false;
-            return Vector2Int.zero;
-        }
+        double elapsed = time - previousSampleTime;
+        if (guard) armed = false;
+        if (elapsed == 0) return Vector2Int.zero;
+        Quaternion previous = previousRotation;
+        previousRotation = rotation; previousSampleTime = time;
+        if (!(elapsed > 0 && elapsed <= .5)) { armed = false; return Vector2Int.zero; }
+        velocity = MenuAngularMotion.Project(previous, rotation, gyro, gyroValid, (float)elapsed, phone);
+        if (guard) { armed = false; return Vector2Int.zero; }
         bool horizontal = Mathf.Abs(velocity.x) > Mathf.Abs(velocity.y);
         float speed = horizontal ? velocity.x : velocity.y;
-        if (Mathf.Abs(speed) <= ThresholdDegreesPerSecond)
-        {
-            armed = true;
-            return Vector2Int.zero;
-        }
+        if (Mathf.Abs(speed) <= ThresholdDegreesPerSecond + .001f) { armed = true; return Vector2Int.zero; }
         if (!armed) return Vector2Int.zero;
         armed = false;
-        return horizontal ? (speed > 0f ? Vector2Int.right : Vector2Int.left)
-            : (speed > 0f ? Vector2Int.up : Vector2Int.down);
+        return horizontal ? (speed > 0 ? Vector2Int.right : Vector2Int.left)
+            : (speed > 0 ? Vector2Int.up : Vector2Int.down);
     }
 }
 

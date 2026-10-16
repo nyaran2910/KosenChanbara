@@ -25,7 +25,6 @@ public sealed partial class MasterController
         previewPitch = player.Pitch; previewRoll = player.Roll;
         previewGuardDirection = player.LastGuardDirection;
         previewDisplayMode = DisplayMode; previewViewedPlayer = ViewedPlayer;
-        player.ThrustAt = other.ThrustAt = -100d;
         player.CombatBaseline = other.CombatBaseline = false;
         player.DirectionGeneration = -1;
         presentation.SetMenuPresentation(true);
@@ -113,7 +112,6 @@ public sealed partial class MasterController
         {
             player.Pitch = previewPitch; player.Roll = previewRoll;
             player.LastGuardDirection = previewGuardDirection;
-            first.ThrustAt = second.ThrustAt = -100d;
             first.CombatBaseline = second.CombatBaseline = false;
             first.DirectionGeneration = second.DirectionGeneration = -1;
         }

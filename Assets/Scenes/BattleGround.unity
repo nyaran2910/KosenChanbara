@@ -422,6 +422,12 @@ MonoBehaviour:
   - {fileID: 1612976696262402858, guid: e8c087430bf5d4670967328f394b4543, type: 3}
   - {fileID: 427819315030579539, guid: a4c7f7f2d7a60444fb2fbe1dc6368a9d, type: 3}
   - {fileID: 369638249014747169, guid: cae0a57f5adff43a49c9cbe3a0ed8b0a, type: 3}
+  - {fileID: 8488382197465914971, guid: ebc95022d1cf6461fbbe2720bd41a6db, type: 3}
+  - {fileID: 5283829501542222516, guid: 14fe17c562c3b470a9c155adba2cd994, type: 3}
+  - {fileID: 5783308515273481120, guid: 5c30893a9e09a428a9614488456032ee, type: 3}
+  - {fileID: 5813116446112620482, guid: fde177a4006d149f0aaead0490c453c5, type: 3}
+  - {fileID: 2557392594048308944, guid: a3df04859da2d41a2bd652230be72ee7, type: 3}
+  - {fileID: 9129408193621242093, guid: 21e02a53e98c34ee395032fe5f4af22c, type: 3}
   characterBlades:
   - {fileID: 2161869974313148938, guid: 8acb6aba8f03c40eba0ab4d315ed1850, type: 3}
   - {fileID: 6555616073925314697, guid: dc0101bc3812949088e0c13f9abe40f8, type: 3}
@@ -429,16 +435,20 @@ MonoBehaviour:
   - {fileID: 2439214948118907782, guid: eb172ba7decbb4485af3db222093e66f, type: 3}
   - {fileID: 5659637495747747764, guid: bc2acc4e5fe68467fa7c0c4fc9b1097c, type: 3}
   - {fileID: 251242020509420198, guid: 84a23c7901d4b4ea99b8097e0fc9e9ba, type: 3}
+  churrosBlade: {fileID: 7741369967958077736, guid: ea297205750114bf4902029789068363, type: 3}
+  churrosWeaponChance: 0.05
   characterNames:
   - ORIGINAL
   - BALD
   - AFRO
   - ROBOT
+  - "\u30C1\u30E5\u30ED\u30B9\u30E1\u30F3"
   characterChestCenters:
   - {x: 0, y: 0.023497807, z: 0}
   - {x: 0, y: 0.023497807, z: 0}
   - {x: 0, y: -0.023568785, z: 0}
   - {x: 0, y: -0.016035732, z: 0}
+  - {x: 0, y: 0.023497807, z: 0}
   colosseumStage: {fileID: 2429060152884578832, guid: 5a49fcaa81b9549008f7694a7166eefb, type: 3}
   cricketStadiumStage: {fileID: 4046726310914956861, guid: 54ef38b80b2b646b3af9b980cd0f30b5, type: 3}
   chambaraStage: {fileID: 1630884423036390933, guid: 7f7c066576d774f37a2b9618c279b673, type: 3}

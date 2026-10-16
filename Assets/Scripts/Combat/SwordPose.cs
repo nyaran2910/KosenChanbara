@@ -38,6 +38,7 @@ namespace SchoolFestival.Combat
     public sealed class GuardPoseTransition
     {
         public const float DurationSeconds = .12f;
+        public const float GuardTurnDegreesPerSecond = 1080f;
         private bool initialized, guarding;
         private double startedAt, lastTime;
         private SwordPose from, current;
@@ -77,53 +78,15 @@ namespace SchoolFestival.Combat
                 return current = target;
             if (age >= DurationSeconds)
                 return current = guard
-                    ? new SwordPose(SwordPoseMath.FollowGuardGrip(current.Position, target.Position, target.Direction, dt), target.Rotation)
+                    ? new SwordPose(SwordPoseMath.FollowGuardGrip(current.Position, target.Position, target.Direction, dt),
+                        Quaternion.RotateTowards(current.Rotation, target.Rotation, GuardTurnDegreesPerSecond * dt))
                     : target;
             float blend = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(age / DurationSeconds));
             current = new SwordPose(Vector3.Lerp(from.Position, target.Position, blend),
                 Quaternion.Slerp(from.Rotation, target.Rotation, blend));
-            return current = guard ? SwordPoseMath.ConstrainGuardPose(current) : current;
-        }
-    }
-
-    public static class ThrustPose
-    {
-        public const float DurationSeconds = .3f;
-        public const float ChamberSeconds = .025f, DriveSeconds = .065f, HoldSeconds = .025f;
-        public const float Reach = .62f, Chamber = .07f;
-
-        public static float Extension(float age)
-        {
-            if (age < 0f || age >= DurationSeconds) return 0f;
-            if (age < ChamberSeconds) return -Chamber * Mathf.SmoothStep(0f, 1f, age / ChamberSeconds);
-            float driveEnd = ChamberSeconds + DriveSeconds;
-            if (age < driveEnd)
-            {
-                float t = (age - ChamberSeconds) / DriveSeconds;
-                // Accelerate immediately, then settle the point at full reach.
-                return Mathf.Lerp(-Chamber, Reach, 1f - Mathf.Pow(1f - t, 3f));
-            }
-            float returnAt = driveEnd + HoldSeconds;
-            if (age < returnAt) return Reach;
-            return Reach * (1f - Mathf.SmoothStep(0f, 1f, (age - returnAt) / (DurationSeconds - returnAt)));
-        }
-
-        public static SwordPose Apply(SwordPose pose, float age)
-            => new SwordPose(pose.Position + pose.Direction * Extension(age), pose.Rotation);
-
-        public static SwordPose ApplyCentered(SwordPose input, SwordPose from, SwordPose forward, float age)
-        {
-            if (age < 0f || age >= DurationSeconds) return input;
-            float align = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(age / ChamberSeconds));
-            float returnAt = ChamberSeconds + DriveSeconds + HoldSeconds;
-            float restore = Mathf.SmoothStep(0f, 1f,
-                Mathf.Clamp01((age - returnAt) / (DurationSeconds - returnAt)));
-            Vector3 position = Vector3.Lerp(from.Position, forward.Position, align);
-            Quaternion rotation = Quaternion.Slerp(from.Rotation, forward.Rotation, align);
-            position = Vector3.Lerp(position, input.Position, restore);
-            rotation = Quaternion.Slerp(rotation, input.Rotation, restore);
-            // The offensive drive has no sideways or vertical aiming component.
-            return new SwordPose(position + Vector3.forward * Extension(age), rotation);
+            // Constrain the destination, rather than snapping the current
+            // attack/recoil pose into the guard plane on its very first frame.
+            return current;
         }
     }
 

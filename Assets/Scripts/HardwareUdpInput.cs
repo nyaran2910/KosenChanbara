@@ -21,6 +21,13 @@ public sealed class HardwareUdpInput
 
     public HardwareUdpInput(byte group = 0) { this.group = group; }
 
+    public void ResetSlot(ControllerSlot slot)
+    {
+        int index = (int)slot;
+        owners[index] = null;
+        foreach (SenderState state in senders.Values) state.Valid[index] = false;
+    }
+
     public bool TryAccept(byte[] datagram, IPEndPoint sender, double realtime,
         out ControllerSlot slot, out MotionSample sample, out bool restarted)
     {
@@ -49,15 +56,22 @@ public sealed class HardwareUdpInput
             state = new SenderState();
             senders.Add(new IPEndPoint(sender.Address, sender.Port), state);
         }
-        restarted = !state.Valid[index] || realtime - state.Previous[index].ReceivedRealtime > HardwareMotionStream.RestartAfterSeconds;
+        restarted = !state.Valid[index];
         uint millis = (uint)sample.BrowserTimestampMilliseconds;
         double extendedMillis = millis;
         if (!restarted)
         {
-            if (!MotionPacketCodec.IsNewerSequence(sample.Sequence, state.Previous[index].Sequence)) return false;
+            double gap = realtime - state.Previous[index].ReceivedRealtime;
+            bool newerSequence = MotionPacketCodec.IsNewerSequence(sample.Sequence, state.Previous[index].Sequence);
             uint elapsed = unchecked(millis - state.Millis[index]);
-            if (elapsed > 10000) return false;
-            extendedMillis = state.Previous[index].BrowserTimestampMilliseconds + elapsed;
+            bool plausibleClock = HardwareMotionStream.IsPlausibleClockAdvance(elapsed, gap);
+            if (!newerSequence || !plausibleClock)
+            {
+                if (sample.Sequence == state.Previous[index].Sequence || gap <= HardwareMotionStream.RestartAfterSeconds)
+                    return false;
+                restarted = true;
+            }
+            else extendedMillis = state.Previous[index].BrowserTimestampMilliseconds + elapsed;
         }
         sample = new MotionSample(sample.Rotation, sample.AngularVelocityDegrees, sample.LinearAcceleration,
             sample.GuardHeld, sample.OrientationValid, sample.GyroscopeValid, sample.AccelerationValid,
@@ -73,7 +87,7 @@ public sealed class HardwareUdpInput
     }
 }
 
-/// <summary>Called under the hub lock. Fresh UDP wins without USB/UDP duplicate flapping.</summary>
+/// <summary>Called under the hub lock. Selects the newest fresh sample and preserves the pose epoch across transport handoff.</summary>
 public sealed class HardwareTransportSamples
 {
     private sealed class Source
@@ -86,7 +100,10 @@ public sealed class HardwareTransportSamples
     private readonly Source usb = new Source();
     private readonly Source udp = new Source();
     private readonly Source[] selected = new Source[2];
-    private readonly int[] selectedVersion = new int[2];
+    private readonly MotionSample[] selectedSample = new MotionSample[2];
+    private readonly bool[] selectedValid = new bool[2];
+    private readonly int[,] observedVersions = new int[2, 2];
+    private readonly bool[,] observedVersionValid = new bool[2, 2];
 
     public void SubmitUsb(ControllerSlot slot, MotionSample sample, bool restarted, string port) => Submit(usb, slot, sample, restarted, port);
     public void SubmitUdp(ControllerSlot slot, MotionSample sample, bool restarted, string port) => Submit(udp, slot, sample, restarted, port);
@@ -98,25 +115,67 @@ public sealed class HardwareTransportSamples
         source.Ports[index] = port;
         if (restarted) source.Versions[index]++;
     }
+    public void ClearSlot(ControllerSlot slot)
+    {
+        int index = (int)slot;
+        usb.Valid[index] = udp.Valid[index] = selectedValid[index] = false;
+        selected[index] = null;
+        observedVersionValid[index, 0] = observedVersionValid[index, 1] = false;
+    }
     public void ClearUsb() { Array.Clear(usb.Valid, 0, usb.Valid.Length); }
     public void Clear()
     {
         ClearUsb();
         Array.Clear(udp.Valid, 0, udp.Valid.Length);
         Array.Clear(selected, 0, selected.Length);
+        Array.Clear(selectedValid, 0, selectedValid.Length);
+        Array.Clear(observedVersionValid, 0, observedVersionValid.Length);
     }
     public bool TrySelect(ControllerSlot slot, double realtime, out MotionSample sample, out bool reset, out string port)
     {
         int index = (int)slot;
-        Source source = Fresh(udp, index, realtime) ? udp : Fresh(usb, index, realtime) ? usb : null;
+        bool udpFresh = Fresh(udp, index, realtime);
+        bool usbFresh = Fresh(usb, index, realtime);
+        Source source = !udpFresh ? (usbFresh ? usb : null) :
+            !usbFresh ? udp : udp.Samples[index].ReceivedRealtime >= usb.Samples[index].ReceivedRealtime ? udp : usb;
         sample = default;
         reset = false;
         port = string.Empty;
         if (source == null) return false;
-        reset = selected[index] != source || selectedVersion[index] != source.Versions[index];
-        selected[index] = source;
-        selectedVersion[index] = source.Versions[index];
+        Source previousSource = selected[index];
+        MotionSample previousSample = selectedSample[index];
+        if (selectedValid[index] && source != previousSource && Fresh(previousSource, index, realtime))
+        {
+            MotionSample candidate = source.Samples[index];
+            bool olderEpoch = candidate.RecenterSequence != previousSample.RecenterSequence &&
+                !MotionPacketCodec.IsNewerRecenterSequence(candidate.RecenterSequence, previousSample.RecenterSequence);
+            bool olderSequence = candidate.RecenterSequence == previousSample.RecenterSequence &&
+                candidate.Sequence != previousSample.Sequence &&
+                !MotionPacketCodec.IsNewerSequence(candidate.Sequence, previousSample.Sequence);
+            uint candidateClockDelta = unchecked(HardwareMotionStream.ClockTicks(candidate.BrowserTimestampMilliseconds) -
+                HardwareMotionStream.ClockTicks(previousSample.BrowserTimestampMilliseconds));
+            bool olderClock = candidate.BrowserTimestampMilliseconds != previousSample.BrowserTimestampMilliseconds &&
+                !HardwareMotionStream.IsPlausibleClockAdvance(candidateClockDelta, candidate.ReceivedRealtime - previousSample.ReceivedRealtime);
+            if (olderEpoch || olderSequence || olderClock) source = previousSource;
+        }
+
         sample = source.Samples[index];
+        int sourceIndex = source == udp ? 1 : 0;
+        bool sourceRestarted = source == previousSource && observedVersionValid[index, sourceIndex] &&
+            observedVersions[index, sourceIndex] != source.Versions[index];
+        bool epochChanged = selectedValid[index] && sample.RecenterSequence != previousSample.RecenterSequence;
+        bool sequenceRolledBack = selectedValid[index] && sample.Sequence != previousSample.Sequence &&
+            !MotionPacketCodec.IsNewerSequence(sample.Sequence, previousSample.Sequence);
+        uint clockDelta = unchecked(HardwareMotionStream.ClockTicks(sample.BrowserTimestampMilliseconds) -
+            HardwareMotionStream.ClockTicks(previousSample.BrowserTimestampMilliseconds));
+        bool clockRolledBack = selectedValid[index] && sample.BrowserTimestampMilliseconds != previousSample.BrowserTimestampMilliseconds &&
+            !HardwareMotionStream.IsPlausibleClockAdvance(clockDelta, sample.ReceivedRealtime - previousSample.ReceivedRealtime);
+        reset = !selectedValid[index] || sourceRestarted || epochChanged || sequenceRolledBack || clockRolledBack;
+        selected[index] = source;
+        observedVersions[index, sourceIndex] = source.Versions[index];
+        observedVersionValid[index, sourceIndex] = true;
+        selectedSample[index] = sample;
+        selectedValid[index] = true;
         port = source.Ports[index];
         return true;
     }

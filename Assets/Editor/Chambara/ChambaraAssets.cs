@@ -253,6 +253,7 @@ public static class ChambaraAssets
         EditorSceneManager.SaveScene(master.gameObject.scene);
         AssetDatabase.SaveAssets();
         Debug.Log("Chambara roster built: " + bodies.Count + " bodies, " + blades.Count + " swords, colosseum.");
+        if (File.Exists(Root + "/Churros/Models/ChurrosExport.json")) ChurrosRoster.Build();
     }
 
     private static string MaterialKey(string name)

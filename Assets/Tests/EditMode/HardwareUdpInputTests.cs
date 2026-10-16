@@ -1,3 +1,4 @@
+using SchoolFestival.Combat;
 using System;
 using System.Diagnostics;
 using System.Linq;
@@ -72,7 +73,7 @@ public sealed class HardwareUdpInputTests
     }
 
     [Test]
-    public void SequenceAndClockWrapThenRebootRequireSilence()
+    public void SequenceAndClockWrapResumeAcrossSilenceAndRebootOnRollback()
     {
         object input = Input();
         Assert.That(Accept(input, Packet(uint.MaxValue, uint.MaxValue - 9), First, 1, out object first, out bool firstReset), Is.True);
@@ -81,9 +82,15 @@ public sealed class HardwareUdpInputTests
         Assert.That(reset, Is.False);
         Assert.That(Get<double>(wrapped, "BrowserTimestampMilliseconds") - Get<double>(first, "BrowserTimestampMilliseconds"), Is.EqualTo(20));
         Assert.That(Accept(input, Packet(0, 1), First, 1.30), Is.False);
-        Assert.That(Accept(input, Packet(0, 1), First, 1.521, out object rebooted, out reset), Is.True);
+        Assert.That(Accept(input, Packet(1, 1000), First, 1.521, out object resumed, out reset), Is.True);
+        Assert.That(reset, Is.False, "A forward sequence and clock resume the existing epoch after silence.");
+        Assert.That(Get<uint>(resumed, "Sequence"), Is.EqualTo(1));
+        Assert.That(Accept(input, Packet(0, 1), First, 2.10, out object rebooted, out reset), Is.True);
         Assert.That(reset, Is.True);
         Assert.That(Get<double>(rebooted, "BrowserTimestampMilliseconds"), Is.EqualTo(1));
+        Assert.That(Accept(input, Packet(1, 0), First, 2.8, out object clockReset, out reset), Is.True);
+        Assert.That(reset, Is.True, "A forward sequence cannot hide a rolled-back clock after silence.");
+        Assert.That(Get<double>(clockReset, "BrowserTimestampMilliseconds"), Is.EqualTo(0));
     }
 
     [Test]
@@ -108,7 +115,8 @@ public sealed class HardwareUdpInputTests
         Assert.That(reset, Is.True); Assert.That(port, Is.EqualTo("COM3"));
         Submit(buffer, "SubmitUdp", Packet(1, 10), 1.01, true, "UDP first");
         Assert.That(Select(buffer, 1.01, out _, out reset, out port), Is.True);
-        Assert.That(reset, Is.True); Assert.That(port, Is.EqualTo("UDP first"));
+        Assert.That(reset, Is.False, "The same controller sequence and recenter epoch survives a transport handoff.");
+        Assert.That(port, Is.EqualTo("UDP first"));
         for (uint seq = 2; seq <= 5; seq++)
         {
             double time = 1 + seq * .01;
@@ -131,12 +139,13 @@ public sealed class HardwareUdpInputTests
         Assert.That(Select(buffer, 1, out _, out _, out _), Is.True);
         Submit(buffer, "SubmitUsb", Packet(11, 110), 1.26, true, "COM3");
         Assert.That(Select(buffer, 1.26, out _, out bool reset, out string port), Is.True);
-        Assert.That(reset, Is.True); Assert.That(port, Is.EqualTo("COM3"));
+        Assert.That(reset, Is.False, "A newer same-epoch USB frame keeps the current pose reference.");
+        Assert.That(port, Is.EqualTo("COM3"));
         Assert.That(Select(buffer, 1.27, out _, out reset, out _), Is.True);
         Assert.That(reset, Is.False);
         Submit(buffer, "SubmitUdp", Packet(12, 120), 1.28, false, "UDP first");
         Assert.That(Select(buffer, 1.28, out _, out reset, out port), Is.True);
-        Assert.That(reset, Is.True); Assert.That(port, Is.EqualTo("UDP first"));
+        Assert.That(reset, Is.False); Assert.That(port, Is.EqualTo("UDP first"));
         Submit(buffer, "SubmitUdp", Packet(0, 1), 2, true, "UDP first");
         Assert.That(Select(buffer, 2, out object sample, out reset, out _), Is.True);
         Assert.That(reset, Is.True); Assert.That(Get<uint>(sample, "Sequence"), Is.Zero);
@@ -144,6 +153,61 @@ public sealed class HardwareUdpInputTests
         Assert.That(reset, Is.False);
         buffer.GetType().GetMethod("Clear").Invoke(buffer, null);
         Assert.That(Select(buffer, 2.02, out _, out _, out _), Is.False);
+    }
+
+    [Test]
+    public void FreshestTransportWinsAndOlderCrossTransportSequenceCannotReplaceIt()
+    {
+        object buffer = Activator.CreateInstance(Runtime("HardwareTransportSamples"));
+        Submit(buffer, "SubmitUsb", Packet(20, 200), 1, true, "COM3");
+        Assert.That(Select(buffer, 1, out _, out _, out _), Is.True);
+        Submit(buffer, "SubmitUdp", Packet(19, 190), 1.01, true, "UDP old");
+        Assert.That(Select(buffer, 1.01, out object selected, out bool reset, out string port), Is.True);
+        Assert.That(port, Is.EqualTo("COM3"));
+        Assert.That(Get<uint>(selected, "Sequence"), Is.EqualTo(20));
+        Assert.That(reset, Is.False);
+        Submit(buffer, "SubmitUdp", Packet(21, 210), 1.02, false, "UDP new");
+        Assert.That(Select(buffer, 1.02, out selected, out reset, out port), Is.True);
+        Assert.That(port, Is.EqualTo("UDP new"));
+        Assert.That(Get<uint>(selected, "Sequence"), Is.EqualTo(21));
+        Assert.That(reset, Is.False);
+        Submit(buffer, "SubmitUdp", Packet(22, 1400), 2.2, false, "UDP new");
+        Assert.That(Select(buffer, 2.2, out selected, out reset, out _), Is.True);
+        Assert.That(Get<uint>(selected, "Sequence"), Is.EqualTo(22));
+        Assert.That(reset, Is.False, "A forward same-source sample after a long gap keeps the pose reference.");
+    }
+
+    [Test]
+    public void QueuedHeartbeatCannotOverwritePendingHaptic()
+    {
+        GameObject host = new GameObject("Feedback coalescing test");
+        host.SetActive(false);
+        try
+        {
+            Type hubType = Runtime("HardwareControllerHub");
+            MonoBehaviour hub = (MonoBehaviour)host.AddComponent(hubType);
+            var pairing = new ControllerPairingRegistry(33, 0); pairing.Load(0, 11, 44);
+            hubType.GetField("pairing", Private).SetValue(hub, pairing);
+            object slot = Enum.ToObject(Runtime("ControllerSlot"), 0);
+            System.Reflection.MethodInfo encode = Runtime("HardwareGameAcknowledgement").GetMethod("Encode");
+            byte[] haptic = (byte[])encode.Invoke(null, new object[] { (byte)0, slot, (uint)10, (ushort)250 });
+            byte[] newerHaptic = (byte[])encode.Invoke(null, new object[] { (byte)0, slot, (uint)11, (ushort)400 });
+            byte[] heartbeat = (byte[])encode.Invoke(null, new object[] { (byte)0, slot, (uint)12, (ushort)0 });
+            System.Reflection.MethodInfo queue = hubType.GetMethod("QueueFeedback", Private);
+            queue.Invoke(hub, new object[] { slot, haptic, null, null, null });
+            queue.Invoke(hub, new object[] { slot, heartbeat, null, null, null });
+            object[] pending = (object[])hubType.GetField("pendingFeedback", Private).GetValue(hub);
+            byte[] queued = (byte[])pending[0].GetType().GetField("Bytes").GetValue(pending[0]);
+            Assert.That(ControllerPairingWire.Unwrap(queued, out _, out _, out byte[] first), Is.True);
+            Assert.That((first[6] | (first[7] << 8)), Is.EqualTo(250));
+
+            queue.Invoke(hub, new object[] { slot, newerHaptic, null, null, null });
+            pending = (object[])hubType.GetField("pendingFeedback", Private).GetValue(hub);
+            queued = (byte[])pending[0].GetType().GetField("Bytes").GetValue(pending[0]);
+            Assert.That(ControllerPairingWire.Unwrap(queued, out _, out _, out byte[] second), Is.True);
+            Assert.That((second[6] | (second[7] << 8)), Is.EqualTo(400));
+        }
+        finally { UnityEngine.Object.DestroyImmediate(host); }
     }
 
     [Test]
@@ -160,7 +224,10 @@ public sealed class HardwareUdpInputTests
             int port = ((IPEndPoint)original.LocalEndPoint).Port;
             using (UdpClient sender = new UdpClient(AddressFamily.InterNetwork))
             {
-                byte[] packet = Packet(1, 10, flags: 0);
+                byte[] packet = ControllerPairingWire.Wrap(Packet(1, 10, flags: 0), 11, 44);
+                byte[] wrongIdentity = ControllerPairingWire.Wrap(Packet(1, 10, flags: 0), 12, 44);
+                sender.Send(wrongIdentity, wrongIdentity.Length, new IPEndPoint(IPAddress.Loopback, port));
+                Thread.Sleep(50); Assert.That(HubHasSample(hub), Is.False);
                 sender.Send(packet, 30, new IPEndPoint(IPAddress.Loopback, port));
                 byte[] tail = packet.Skip(30).ToArray();
                 sender.Send(tail, tail.Length, new IPEndPoint(IPAddress.Loopback, port));
@@ -183,6 +250,87 @@ public sealed class HardwareUdpInputTests
             }
         }
         finally { if (host != null) StopUdpHub(host); }
+    }
+
+    [Test]
+    public void RegistrationHandshakeAndDiscoveryWorkOverRealUdpAndSaveOnlyConfirmedIdentity()
+    {
+        GameObject host = null;
+        string folder = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "sf-pairing-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            MonoBehaviour hub = StartUdpHub(0, out host, out _);
+            hub.GetType().GetField("pairingPath", Private).SetValue(hub, System.IO.Path.Combine(folder, "pairing.json"));
+            var registry = Field<ControllerPairingRegistry>(hub, "pairing"); registry.Begin(1);
+            Assert.That(WaitFor(() => Field<Socket>(hub, "udpSocket") != null), Is.True);
+            var destination = new IPEndPoint(IPAddress.Loopback, ((IPEndPoint)Field<Socket>(hub, "udpSocket").LocalEndPoint).Port);
+            using (var sender = new UdpClient(AddressFamily.InterNetwork))
+            {
+                sender.Client.ReceiveTimeout = 2000;
+                IPEndPoint source = new IPEndPoint(IPAddress.Any, 0);
+                var request = new ControllerPairingWire.Frame { Type = ControllerPairingWire.Kind.Request, Device = 55, Request = 66 };
+                byte[] data = ControllerPairingWire.Encode(request); sender.Send(data, data.Length, destination);
+                Assert.That(ControllerPairingWire.TryDecode(sender.Receive(ref source), out var offer), Is.True);
+                Assert.That(offer.Type, Is.EqualTo(ControllerPairingWire.Kind.Offer)); Assert.That(offer.Slot, Is.EqualTo(1));
+                offer.Type = ControllerPairingWire.Kind.Commit; data = ControllerPairingWire.Encode(offer);
+                sender.Send(data, data.Length, destination);
+                Assert.That(ControllerPairingWire.TryDecode(sender.Receive(ref source), out var confirm), Is.True);
+                Assert.That(confirm.Type, Is.EqualTo(ControllerPairingWire.Kind.Confirm));
+                Assert.That(registry.Revision, Is.Zero, "Commit alone does not finish the game's registration.");
+                data = ControllerPairingWire.Wrap(Packet(1, 10, slot: 1), 55, confirm.Session); sender.Send(data, data.Length, destination);
+                Assert.That(WaitFor(() => { Tick(hub); return Field<bool[]>(hub, "valid")[1]; }), Is.True);
+                Assert.That(registry.MatchesBinding(55, confirm.Session, 1), Is.True);
+                Assert.That(registry.MatchesBinding(11, 44, 0), Is.True, "The other player's registration survives.");
+                Assert.That(System.IO.File.ReadAllText(System.IO.Path.Combine(folder, "pairing.json")), Does.Contain("0000000000000037"));
+                confirm.Type = ControllerPairingWire.Kind.Discover; confirm.Request = 77; data = ControllerPairingWire.Encode(confirm);
+                sender.Send(data, data.Length, destination);
+                Assert.That(ControllerPairingWire.TryDecode(sender.Receive(ref source), out var found), Is.True);
+                Assert.That(found.Type, Is.EqualTo(ControllerPairingWire.Kind.Found)); Assert.That(found.Request, Is.EqualTo(77));
+            }
+        }
+        finally
+        {
+            if (host != null) StopUdpHub(host);
+            if (System.IO.Directory.Exists(folder)) System.IO.Directory.Delete(folder, true);
+        }
+    }
+
+    [Test]
+    public void ExplicitReenrollmentCanReplaceAFreshUdpOwnerImmediately()
+    {
+        GameObject host = null;
+        string folder = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "sf-repair-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            MonoBehaviour hub = StartUdpHub(0, out host, out _);
+            hub.GetType().GetField("pairingPath", Private).SetValue(hub, System.IO.Path.Combine(folder, "pairing.json"));
+            Assert.That(WaitFor(() => Field<Socket>(hub, "udpSocket") != null), Is.True);
+            var destination = new IPEndPoint(IPAddress.Loopback, ((IPEndPoint)Field<Socket>(hub, "udpSocket").LocalEndPoint).Port);
+            using (var oldSender = new UdpClient(AddressFamily.InterNetwork))
+            using (var newSender = new UdpClient(AddressFamily.InterNetwork))
+            {
+                newSender.Client.ReceiveTimeout = 2000;
+                byte[] original = ControllerPairingWire.Wrap(Packet(100, 1000), 11, 44); oldSender.Send(original, original.Length, destination);
+                Assert.That(WaitFor(() => HubHasSample(hub)), Is.True);
+                Field<ControllerPairingRegistry>(hub, "pairing").Begin(0);
+                var request = new ControllerPairingWire.Frame { Type = ControllerPairingWire.Kind.Request, Device = 55, Request = 66 };
+                byte[] data = ControllerPairingWire.Encode(request); newSender.Send(data, data.Length, destination);
+                IPEndPoint source = new IPEndPoint(IPAddress.Any, 0);
+                Assert.That(ControllerPairingWire.TryDecode(newSender.Receive(ref source), out var offer), Is.True);
+                offer.Type = ControllerPairingWire.Kind.Commit; data = ControllerPairingWire.Encode(offer); newSender.Send(data, data.Length, destination);
+                Assert.That(ControllerPairingWire.TryDecode(newSender.Receive(ref source), out var confirm), Is.True);
+                data = ControllerPairingWire.Wrap(Packet(1, 10), 55, confirm.Session); newSender.Send(data, data.Length, destination);
+                Assert.That(WaitFor(() => { Tick(hub); return Field<ControllerPairingRegistry>(hub, "pairing").MatchesBinding(55, confirm.Session, 0); }), Is.True);
+                original = ControllerPairingWire.Wrap(Packet(101, 1010), 11, 44); oldSender.Send(original, original.Length, destination);
+                Thread.Sleep(30); Tick(hub);
+                Assert.That(Get<uint>(Field<Array>(hub, "latest").GetValue(0), "Sequence"), Is.EqualTo(1), "The replaced device cannot reclaim the slot.");
+            }
+        }
+        finally
+        {
+            if (host != null) StopUdpHub(host);
+            if (System.IO.Directory.Exists(folder)) System.IO.Directory.Delete(folder, true);
+        }
     }
 
     [Test]
@@ -213,6 +361,9 @@ public sealed class HardwareUdpInputTests
         host = new GameObject("Isolated UDP hub test");
         host.SetActive(false); // Skip Awake and the native serial receiver.
         MonoBehaviour hub = (MonoBehaviour)host.AddComponent(Runtime("HardwareControllerHub"));
+        var pairing = new ControllerPairingRegistry(33, 0); pairing.Load(0, 11, 44);
+        hub.GetType().GetField("pairing", Private).SetValue(hub, pairing);
+        hub.GetType().GetField("savedPairingRevision", Private).SetValue(hub, 0);
         hub.GetType().GetField("udpPort", Private).SetValue(hub, port);
         hub.GetType().GetField("realtimeOrigin", Private).SetValue(hub, Time.realtimeSinceStartupAsDouble);
         hub.GetType().GetField("stopwatch", Private).SetValue(hub, Stopwatch.StartNew());
