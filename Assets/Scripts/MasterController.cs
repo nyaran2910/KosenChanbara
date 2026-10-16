@@ -89,6 +89,10 @@ public sealed partial class MasterController : MonoBehaviour
         public float WaitingFollowSpeed;
         public SwordPose VisualBasePose;
         public SwordPose RenderedPreviousPose, RenderedPose;
+        public SwordPose RenderedInputPose;
+        public Vector3 RenderedRootPosition;
+        public Quaternion RenderedRootRotation;
+        public bool RenderedGuardHeld;
         public bool RenderedBaseline;
         public double RenderedAt = double.NegativeInfinity;
         public bool ContactResolved, CombatGuardHeld;
@@ -676,6 +680,9 @@ public sealed partial class MasterController : MonoBehaviour
         if (first == null || second == null)
             return;
 
+        SwordPose firstBeforeReset = new SwordPose(first.Sword.localPosition, first.Sword.localRotation);
+        SwordPose secondBeforeReset = new SwordPose(second.Sword.localPosition, second.Sword.localRotation);
+        bool appearanceChanged = false;
         singleScoreOffered = singleUsedShortcut = false;
         if (gameFlow != null) gameFlow.ResetSingleScore();
         series.Reset(matchTime);
@@ -684,13 +691,25 @@ public sealed partial class MasterController : MonoBehaviour
         singlePushActive = singleCrowdInitialized = false;
         singlePushNpc = null;
         singleStarted = matchTime;
-        ResetRound();
+        // Select visuals before resetting their pose/grounding. Refreshing an
+        // appearance afterwards would overwrite the reset's smooth transition.
         for (int player = 0; player < 2; player++)
         {
             bool useChurros = RollChurrosWeapon();
             if (usingChurrosBlade[player] == useChurros) continue;
             usingChurrosBlade[player] = useChurros;
+            appearanceChanged = true;
             ApplyAppearance(player);
+        }
+        ResetRound();
+        if (appearanceChanged)
+        {
+            // A visual-only weapon roll must preserve the same reset starting
+            // geometry as a round that keeps its weapon.
+            first.TargetPose = firstBeforeReset; second.TargetPose = secondBeforeReset;
+            first.GuardTransition.BeginFrom(firstBeforeReset, first.GuardHeld, SwordPoseTime);
+            second.GuardTransition.BeginFrom(secondBeforeReset, second.GuardHeld, SwordPoseTime);
+            ApplyPose(first, first.TargetPose); ApplyPose(second, second.TargetPose);
         }
         ClearSingleNpcs();
         singleCourse.Reset(first.Player.position, FieldCenter, FieldRadius);
@@ -772,6 +791,9 @@ public sealed partial class MasterController : MonoBehaviour
         if (!suspended)
         {
             first.InputGeneration++; second.InputGeneration++;
+            // Resuming invalidates strike history, not the current sword pose.
+            first.GuardPoseGeneration = first.InputGeneration;
+            second.GuardPoseGeneration = second.InputGeneration;
             ReadInput(first, true, false); ReadInput(second, false, false);
             singleStroke.Reset();
             first.CombatBaseline = second.CombatBaseline = false;
@@ -889,6 +911,11 @@ public sealed partial class MasterController : MonoBehaviour
         // Keep the round, player objects and controller sessions. Only refresh
         // presentation and attack baselines when changing pause-screen settings.
         first.InputGeneration++; second.InputGeneration++;
+        // Appearance/layout changes do not change the input source. Starting a
+        // new timed transition here would freeze it while the match is paused.
+        first.GuardTransition.Reset(); second.GuardTransition.Reset();
+        first.GuardPoseGeneration = first.InputGeneration;
+        second.GuardPoseGeneration = second.InputGeneration;
         first.LastGuardDirection = second.LastGuardDirection = Vector3.up;
         presentation.ClearMotionHistory();
         CombatInput firstInput = ReadInput(first, true, false), secondInput = ReadInput(second, false, false);
@@ -1823,15 +1850,25 @@ public sealed partial class MasterController : MonoBehaviour
             SingleNpc npc = singleNpcs[i];
             if (npc.Defeated && now - npc.DefeatedAt > 1.15)
             { Destroy(npc.Root); singleNpcs.RemoveAt(i); continue; }
-            npc.Avatar.Tick(now, dt, npc.VisualBasePose.Rotation,
-                SingleNpcGuarding(npc, now), 0f);
             bool guarding = SingleNpcGuarding(npc, now);
-            SwordPose visible = npc.Avatar.PoseSword(npc.VisualBasePose, now, guarding);
-            npc.Sword.SetLocalPositionAndRotation(visible.Position, visible.Rotation);
-            npc.RenderedPreviousPose = npc.RenderedBaseline ? npc.RenderedPose : visible;
-            npc.RenderedPose = visible;
-            npc.RenderedBaseline = true;
-            npc.RenderedAt = now;
+            Transform root = npc.Root.transform;
+            bool reuse = dt <= 0f && npc.RenderedBaseline && npc.RenderedAt == now
+                && npc.RenderedInputPose.Position == npc.VisualBasePose.Position
+                && npc.RenderedInputPose.Rotation == npc.VisualBasePose.Rotation
+                && npc.RenderedGuardHeld == guarding && npc.RenderedRootPosition == root.position
+                && npc.RenderedRootRotation == root.rotation;
+            if (!reuse)
+            {
+                npc.Avatar.Tick(now, dt, npc.VisualBasePose.Rotation, guarding, 0f);
+                SwordPose visible = npc.Avatar.PoseSword(npc.VisualBasePose, now, guarding);
+                npc.Sword.SetLocalPositionAndRotation(visible.Position, visible.Rotation);
+                npc.RenderedPreviousPose = npc.RenderedBaseline ? npc.RenderedPose : visible;
+                npc.RenderedPose = visible;
+                npc.RenderedBaseline = true;
+                npc.RenderedAt = now;
+                npc.RenderedInputPose = npc.VisualBasePose; npc.RenderedGuardHeld = guarding;
+                npc.RenderedRootPosition = root.position; npc.RenderedRootRotation = root.rotation;
+            }
             npc.Status.Refresh(npc.Hearts, ShowdownCombat.AttackCueProgress(npc.AttackTimer, npc.SwingSeconds),
                 !npc.Defeated && npc == singleActiveNpc, npc.Sword.position + npc.Sword.forward * ShowdownCombat.BladeStart, now);
         }

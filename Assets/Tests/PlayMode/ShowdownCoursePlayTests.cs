@@ -316,7 +316,7 @@ public sealed class ShowdownCoursePlayTests
             sword.position = Player.position + Vector3.up * .15f + Player.forward * .55f;
             Vector3 direction = Quaternion.AngleAxis(-angle, Player.right) * Player.forward;
             sword.rotation = Quaternion.LookRotation(direction, Player.up);
-            UpdateSingleAttackWithManualSword(new CombatInput(angle, 90f, guard, valid, 44));
+            UpdateSingleAttackWithManualSword(new CombatInput(angle, 180f, guard, valid, 44));
         }
         Stroke(80f); Stroke(45f);
         foreach (object enemy in enemies)
@@ -355,11 +355,11 @@ public sealed class ShowdownCoursePlayTests
             Transform guardSword = (Transform)RuntimeField(enemy, "Sword");
             guardSword.position += Player.right * 4f;
             SetRuntimeField(enemy, "VisualBasePose", new SwordPose(guardSword.localPosition, guardSword.localRotation));
-            foreach (float angle in new[] { 80f, 45f, 20.3f })
+            foreach (float angle in new[] { 80f, 45f, 19f })
             {
                 sword.position = Player.position + Vector3.up * .15f + Player.forward * .55f;
                 sword.rotation = Quaternion.LookRotation(Quaternion.AngleAxis(-angle, Player.right) * Player.forward, Player.up);
-                UpdateSingleAttackWithManualSword(new CombatInput(angle, 90f, false, true, 44));
+                UpdateSingleAttackWithManualSword(new CombatInput(angle, 180f, false, true, 44));
             }
         }
         Strike();
@@ -392,7 +392,7 @@ public sealed class ShowdownCoursePlayTests
             Vector3 target = angle < 0f ? defence.BodyCenter : intercept;
             sword.position = target - Player.forward * 1.4f;
             sword.rotation = Quaternion.LookRotation(Quaternion.AngleAxis(-angle, Player.right) * Player.forward, Player.up);
-            UpdateSingleAttackWithManualSword(new CombatInput(angle, 90f, false, true, 44));
+            UpdateSingleAttackWithManualSword(new CombatInput(angle, 180f, false, true, 44));
         }
     }
 
@@ -627,7 +627,7 @@ public sealed class ShowdownCoursePlayTests
     }
 
     [UnityTest]
-    public IEnumerator ShortCutsNeedRealPreparationAndDoNotDamageDuringTakeback()
+    public IEnumerator CutsRequireSixtyDegreesAndDoNotDamageDuringTakeback()
     {
         Call(master, "SpawnSingleNpc");
         object npc = Field<IList>(master, "singleNpcs")[0];
@@ -644,25 +644,27 @@ public sealed class ShowdownCoursePlayTests
             sword.rotation = Quaternion.LookRotation(Quaternion.AngleAxis(-angle, Player.right) * Player.forward, Player.up);
             UpdateSingleAttackWithManualSword(new CombatInput(angle, speed, false, true, 700));
         }
-        Cut(35f, 0f);
+        Cut(70f, 0f);
         SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + .1d);
-        Cut(10f, 90f);
-        Assert.That(RuntimeField(npc, "Hearts"), Is.EqualTo(2), "A short 25-degree real swing must damage without a raised-sword prerequisite.");
-        Cut(5f, 90f);
+        Cut(45f, 180f);
+        Assert.That(RuntimeField(npc, "Hearts"), Is.EqualTo(3), "Recognition at 25 degrees must not damage before the 60-degree hit threshold.");
+        Cut(5f, 180f);
+        Assert.That(RuntimeField(npc, "Hearts"), Is.EqualTo(2), "A fast 65-degree stroke through the body must damage.");
+        Cut(0f, 180f);
         Assert.That(RuntimeField(npc, "Hearts"), Is.EqualTo(2), "The continuing consumed swing cannot damage twice.");
-        SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + DuelMatch.HitStopSeconds + DuelMatch.PushSeconds + .01d);
+        SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + DuelMatch.HitStopSeconds + CombatAdvance.Duration(DuelMatch.HitPush) + .01d);
         Call(master, "AdvanceSingleReaction", Field<double>(master, "matchTime"));
         Cut(5f, 0f);
         SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + .1d);
-        Cut(35f, 90f);
+        Cut(70f, 180f);
         Assert.That(RuntimeField(npc, "Hearts"), Is.EqualTo(2), "Returning to the preparation cannot score another hit.");
         SetRuntimeField(npc, "GuardOctant", 0);
         Call(master, "UpdateNpcGuard", npc, 0f);
         PublishNpcGuardHistory(npc);
         SetRuntimeField(master, "matchTime", Field<double>(master, "matchTime") + .1d);
-        Cut(10f, 90f);
+        Cut(45f, 180f); Cut(5f, 180f);
         Assert.That(RuntimeField(npc, "Hearts"), Is.EqualTo(1),
-            "A newly prepared short cut is valid; the staggered enemy's parallel vertical guard does not make it immune.");
+            "A newly prepared 65-degree cut is valid; the staggered enemy's parallel vertical guard does not make it immune.");
         yield return null;
     }
 
@@ -687,16 +689,16 @@ public sealed class ShowdownCoursePlayTests
         }
         Stroke(80f, 0f); Stroke(45f, 8f); Stroke(5f, 8f);
         Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(3), "A slow movement cannot begin a strike.");
-        Stroke(80f, 120f); Stroke(45f, 120f); Stroke(5f, 8f);
+        Stroke(80f, 180f); Stroke(45f, 180f); Stroke(5f, 8f);
         Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(3), "A recognized cut becomes harmless as it slows below the required speed.");
-        Stroke(80f, 120f); Stroke(45f, 120f); Stroke(5f, 120f);
+        Stroke(80f, 180f); Stroke(45f, 180f); Stroke(5f, 180f);
         Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(2), "A fast prepared cut still damages.");
         SetRuntimeField(master, "matchTime", (double)RuntimeField(enemy, "RecoveryUntil") + .01d);
         SetRuntimeField(enemy, "StunnedUntil", 100d);
         // Begin the next real stroke out of reach: raising the sword is a
         // valid upward cut, not an inert eighty-degree rearm any more.
         root.position = Player.position + Player.forward * 10f;
-        Stroke(80f, 120f); Stroke(45f, 120f);
+        Stroke(80f, 180f); Stroke(45f, 180f);
         Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(2));
         root.position = Player.position + Player.forward * 1.2f + Vector3.up * .5f;
         Stroke(45f, 0f);
@@ -766,7 +768,7 @@ public sealed class ShowdownCoursePlayTests
                 sword.position = Player.position + Player.right * (stroke == 0 ? 0f : 1.2f)
                     + Vector3.up * .15f + Player.forward * .55f;
                 sword.rotation = Quaternion.LookRotation(Quaternion.AngleAxis(-angle, Player.right) * Player.forward, Player.up);
-                UpdateSingleAttackWithManualSword(new CombatInput(angle, 90f, false, true, 44));
+                UpdateSingleAttackWithManualSword(new CombatInput(angle, 180f, false, true, 44));
             }
             Assert.That(RuntimeField(enemy, "Hearts"), Is.EqualTo(stroke == 0 ? 3 : 2),
                 "Only the cut through the displayed chest should contact the enemy.");
@@ -1195,7 +1197,7 @@ public sealed class ShowdownCoursePlayTests
         Quaternion p2Rotation = Quaternion.Euler(35f, 20f, -15f);
         Hardware(0, Quaternion.identity, 0f, false);
         Hardware(1, p2Rotation, 140f, false);
-        SampleControllers(); Tick(.01f);
+        SampleControllers(); Tick(.01f); Tick(GuardPoseTransition.DurationSeconds + .01f);
         Quaternion expected = (Quaternion)Get(p2, "CurrentLocalRotation");
         Assert.That(Quaternion.Angle(Target(), expected), Is.LessThan(.05f));
         Assert.That(Quaternion.Angle(visibleSword.localRotation, expected), Is.LessThan(.05f),

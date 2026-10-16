@@ -5,6 +5,8 @@ using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using NUnit.Framework;
+using SchoolFestival.Combat;
+using System.IO;
 using UnityEngine;
 using UnityEngine.TestTools;
 
@@ -14,6 +16,7 @@ public sealed class HardwareReceiverLifecyclePlayTests
     private MonoBehaviour hub;
     private string previousPort;
     private int port;
+    private string pairingPath;
     private static readonly BindingFlags Fields = BindingFlags.Instance | BindingFlags.NonPublic;
     private static Type RuntimeType(string name) => AppDomain.CurrentDomain.GetAssemblies()
         .Select(a => a.GetType(name)).First(t => t != null);
@@ -32,7 +35,12 @@ public sealed class HardwareReceiverLifecyclePlayTests
         previousPort = Environment.GetEnvironmentVariable("KOSEN_CONTROLLER_UDP_PORT");
         Environment.SetEnvironmentVariable("KOSEN_CONTROLLER_UDP_PORT", port.ToString());
         root = new GameObject("Controller receiver lifecycle test");
+        root.SetActive(false);
         hub = (MonoBehaviour)root.AddComponent(RuntimeType("HardwareControllerHub"));
+        pairingPath = Path.Combine(Path.GetTempPath(), "sf-pairing-" + Guid.NewGuid() + ".json");
+        hub.GetType().GetField("pairingPath", Fields).SetValue(hub, pairingPath);
+        root.SetActive(true);
+        ((ControllerPairingRegistry)hub.GetType().GetField("pairing", Fields).GetValue(hub)).Load(0, 1, 2);
         yield return WaitUntil(() => Listening);
     }
 
@@ -42,6 +50,7 @@ public sealed class HardwareReceiverLifecyclePlayTests
         if (root != null) UnityEngine.Object.Destroy(root);
         Environment.SetEnvironmentVariable("KOSEN_CONTROLLER_UDP_PORT", previousPort);
         yield return null;
+        if (pairingPath != null && File.Exists(pairingPath)) File.Delete(pairingPath);
     }
 
     [UnityTest]
@@ -74,7 +83,9 @@ public sealed class HardwareReceiverLifecyclePlayTests
             yield return SendUntilConnected(sender, 2);
             yield return WaitUntil(() => sender.Available > 0);
             IPEndPoint endpoint = null;
-            byte[] ack = sender.Receive(ref endpoint);
+            byte[] envelope = sender.Receive(ref endpoint);
+            Assert.That(ControllerPairingWire.Unwrap(envelope, out ulong device, out ulong session, out byte[] ack), Is.True);
+            Assert.That(device, Is.EqualTo(1UL)); Assert.That(session, Is.EqualTo(2UL));
             Assert.That(ack.Length, Is.EqualTo(16));
             Assert.That(ack.Take(8), Is.EqualTo(new byte[] { 0x4b, 0x41, 1, 16, 0, 0, 0, 0 }));
             Assert.That(BitConverter.ToUInt32(ack, 8), Is.GreaterThanOrEqualTo(2u));
@@ -112,7 +123,7 @@ public sealed class HardwareReceiverLifecyclePlayTests
         uint crc = (uint)RuntimeType("HardwareMotionPacketCodec").GetMethod("Crc32")
             .Invoke(null, new object[] { bytes, 60 });
         Array.Copy(BitConverter.GetBytes(crc), 0, bytes, 60, 4);
-        return bytes;
+        return ControllerPairingWire.Wrap(bytes, 1, 2);
     }
 
     private static IEnumerator WaitUntil(Func<bool> condition)

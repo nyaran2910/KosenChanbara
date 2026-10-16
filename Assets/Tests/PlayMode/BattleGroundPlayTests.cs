@@ -383,6 +383,7 @@ public sealed class BattleGroundPlayTests
         yield return null;
         yield return null;
         SetKeys();
+        yield return new WaitForSecondsRealtime(GuardPoseTransition.DurationSeconds + .03f);
         Assert.That(Field<bool>(master, "reactionActive"), Is.False);
         Assert.That(master.transform.position, Is.EqualTo(initialPosition));
         Assert.That(Vector3.Angle(firstSword.transform.forward, firstPlayer.transform.forward), Is.EqualTo(90f).Within(0.01f));
@@ -409,7 +410,7 @@ public sealed class BattleGroundPlayTests
             .Where(b => (bool)b.GetType().GetField("Active").GetValue(b)).ToArray();
         double[] burstStarts = pausedBursts.Select(b => (double)b.GetType().GetField("Start").GetValue(b)).ToArray();
         Assert.That(bursts, Is.GreaterThan(0));
-        Assert.That(HubOverlay(), Is.True);
+        Assert.That(HubOverlay(), Is.False, "Registration lives in the Esc menu; the legacy phone overlay stays hidden.");
         Assert.That(hub.gameObject.activeInHierarchy, Is.True);
         Assert.That(firstSword.GetComponents<MonoBehaviour>().Any(c => c.GetType().Name == "MotionController"), Is.True);
         Assert.That(master.transform.Find("Pause UI/Pause hint"), Is.Null);
@@ -461,13 +462,14 @@ public sealed class BattleGroundPlayTests
         yield return null;
         yield return null;
         Assert.That(Field<bool>(master, "reactionActive"), Is.False, "Motion made during pause must not trigger an attack on resume.");
+        yield return new WaitForSecondsRealtime(GuardPoseTransition.DurationSeconds + .03f);
         AssertCurrentPose(firstSword, true);
         Pause(true);
         SetKeys(Key.R);
         yield return null;
         yield return null;
         Assert.That(Paused(), Is.True);
-        Assert.That(HubOverlay(), Is.True);
+        Assert.That(HubOverlay(), Is.False, "Registration lives in the Esc menu; the legacy phone overlay stays hidden.");
         Assert.That(Field<bool>(master, "reactionActive"), Is.False);
         Assert.That(Winner(), Is.EqualTo(MatchWinner.None));
         SetKeys();
@@ -768,6 +770,10 @@ public sealed class BattleGroundPlayTests
         SetKeys(Key.LeftShift, Key.RightShift);
         yield return null;
         InvokeMaster("SetDisplayMode", 2);
+        // This fixture tests colour replacement; alternate-weapon selection is
+        // covered independently by ChurrosPlayTests.
+        bool[] weapons = Field<bool[]>(master, "usingChurrosBlade");
+        weapons[0] = weapons[1] = false;
         InvokeMaster("SetColor", 0, 1);
         Assert.That(Field<Transform>(Field<Array>(presentation, "avatars").GetValue(0), "visual").gameObject.activeSelf, Is.True,
             "Replacement must bind the new active skeleton in the same frame");
@@ -847,8 +853,11 @@ public sealed class BattleGroundPlayTests
                 Pause(false); SetKeys();
                 yield return new WaitForSecondsRealtime(0.4f);
                 Assert.That(Vector3.Distance(master.transform.position, target), Is.LessThan(0.001f));
+                // The attacker advances over 0.45s while recoil finishes in
+                // 0.12s. Compare local spacing only after that advance settles.
+                yield return new WaitForSecondsRealtime(.2f);
                 Assert.That(Vector3.Distance(players[1 - pushed].transform.localPosition, otherStart), Is.LessThan(.2f),
-                    "The unstruck player may close only the small gap left by lateral recoil.");
+                    "After the striker catches up, only the lateral spacing correction remains.");
                 Assert.That(Vector3.Distance(players[pushed].transform.localPosition, lateralTarget), Is.LessThan(0.001f));
                 yield return new WaitForSecondsRealtime(0.8f);
                 for (int p = 0; p < 2; p++)
@@ -988,6 +997,9 @@ public sealed class BattleGroundPlayTests
         GameObject environment = Field<GameObject>(arena, "environment");
         Assert.That(environment, Is.Not.Null);
         Assert.That(environment.transform.position.y, Is.EqualTo(-0.35f).Within(0.01f));
+        Field<bool[]>(master, "usingChurrosBlade")[0] = false;
+        InvokeMaster("ApplyAppearance", 0);
+        yield return null; // Unity retires the previous same-name model at frame end.
         string[] characters = { "Original", "Bald", "Afro", "Robot" };
         string[] colors = { "Red", "Blue", "Green", "Yellow", "Purple", "Black" };
         for (int character = 0; character < characters.Length; character++)
@@ -1242,7 +1254,10 @@ public sealed class BattleGroundPlayTests
                     Vector3[] contacts = legs.Select(l => (Vector3)l.GetType().GetField("WorldPlant").GetValue(l)).ToArray();
                     // Run the production hit-stop and push trajectory, not a
                     // recoil notification with a stationary combat origin.
+                    Vector3 rootBeforeStep = player.transform.position;
                     advance.Invoke(master, new object[] { now });
+                    Vector3 groundDelta = player.transform.position - rootBeforeStep;
+                    Vector3 groundCarry = groundDelta.magnitude * fps > 12f ? groundDelta : Vector3.zero;
                     TickAvatar(avatar, now, 1f / fps, upright, false, 0);
                     int movingFeet = 0;
                     for (int foot = 0; foot < 2; foot++)
@@ -1253,11 +1268,15 @@ public sealed class BattleGroundPlayTests
                             movingFeet++; lifted[foot] = true;
                             Assert.That(Vector3.Distance(feet[foot].position,
                                 (Vector3)legs[foot].GetType().GetField("WorldPlant").GetValue(legs[foot])), Is.LessThan(0.003f),
-                                "Swinging ankle exceeded its leg reach at " + fps + " FPS");
+                                "Swinging ankle exceeded its leg reach at " + fps + " FPS frame=" + frame + " foot=" + foot
+                                + " ankle=" + feet[foot].position + " target=" + (Vector3)legs[foot].GetType().GetField("WorldPlant").GetValue(legs[foot])
+                                + " hip=" + ((Transform)legs[foot].GetType().GetField("Upper").GetValue(legs[foot])).position + " root=" + player.transform.position);
                         }
                         else if (!wasMoving[foot])
-                            Assert.That(Vector3.Distance(feet[foot].position, contacts[foot]), Is.LessThan(0.003f),
-                                "Supporting foot slid in world space at " + fps + " FPS");
+                            Assert.That(Vector3.Distance(feet[foot].position, contacts[foot] + groundCarry), Is.LessThan(0.003f),
+                                "Supporting foot left its moving ground contact at " + fps + " FPS frame=" + frame + " foot=" + foot
+                                + " ankle=" + feet[foot].position + " contact=" + (contacts[foot] + groundCarry)
+                                + " target=" + (Vector3)legs[foot].GetType().GetField("WorldPlant").GetValue(legs[foot]));
                         Assert.That(feet[foot].position.y, Is.GreaterThanOrEqualTo(plants[foot].y - 0.003f));
                         highest = Mathf.Max(highest, feet[foot].position.y - plants[foot].y);
                         if (now <= result.HitStopSeconds)
@@ -1281,14 +1300,23 @@ public sealed class BattleGroundPlayTests
                 Assert.That(highest, Is.InRange(0.02f, 0.08f), "Recovery needs a visible, short swing-foot arc.");
                 Assert.That(Vector3.Distance(Field<Vector3>(avatar, "renderedOrigin"), player.transform.position), Is.LessThan(0.001f));
 
+                // Reset may re-roll the weapon and replace its presentation
+                // avatar while retaining the player/controller roots.
+                InvokeMaster("ResetMatch");
+                avatar = avatars.GetValue(playerIndex);
+                TickAvatar(avatar, 0, 0, upright, false, 0);
                 // Clearing history during a real airborne step suppresses its
                 // delayed landing sound; a new step may still start normally.
-                InvokeMaster("ResetMatch");
                 begin.Invoke(master, new object[] { result, 0.0 });
-                double afterStop = result.HitStopSeconds + 0.05;
-                advance.Invoke(master, new object[] { afterStop });
-                TickAvatar(avatar, afterStop, 0.05f, upright, false, 0);
-                Assert.That(Field<int>(avatar, "movingLeg"), Is.GreaterThanOrEqualTo(0));
+                double afterStop = 0d;
+                for (int frame = 0; frame < fps; frame++)
+                {
+                    afterStop = frame / (double)fps;
+                    advance.Invoke(master, new object[] { afterStop });
+                    TickAvatar(avatar, afterStop, 1f / fps, upright, false, 0);
+                    if (Field<int>(avatar, "movingLeg") >= 0) break;
+                }
+                Assert.That(Field<int>(avatar, "movingLeg"), Is.GreaterThanOrEqualTo(0), "The real push must produce an airborne recovery step.");
                 avatar.GetType().GetMethod("ClearMotionHistory").Invoke(avatar, null);
                 TickAvatar(avatar, afterStop + 0.3, 0.3f, upright, false, 0);
                 Assert.That(AvatarFlag(avatar, "Stepped"), Is.False);
@@ -1477,7 +1505,7 @@ public sealed class BattleGroundPlayTests
         double now = MatchTime();
         var ready = new CombatInput(90f, 0f);
         match.Step(ready, ready, attack, defence, now);
-        var strike = new CombatInput(40f, 120f);
+        var strike = new CombatInput(20f, 180f);
         var held = new CombatInput(90f, 0f, true);
         CombatResult result = attacker == 0 ? match.Step(strike, held, attack, defence, now)
             : match.Step(held, strike, defence, attack, now);

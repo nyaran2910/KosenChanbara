@@ -486,6 +486,7 @@ public sealed class DuelAvatar
         if (!groundInitialized) ResetGrounding();
         dt = Mathf.Max(0f, dt);
         Vector3 targetOrigin = player.position + bodyTravel;
+        int landedThisTick = -1;
         Vector3 rootDelta = player.position - previousPlayerRoot;
         previousPlayerRoot = player.position;
         float rootSpeed = dt > 0f ? rootDelta.magnitude / dt : 0f;
@@ -525,7 +526,7 @@ public sealed class DuelAvatar
             stepping = false; stepLift = 0f;
         }
 
-        if (movingLeg >= 0)
+        if (movingLeg >= 0 && dt > 0f)
         {
             Leg moving = legs[movingLeg];
             moving.Elapsed += dt;
@@ -537,12 +538,12 @@ public sealed class DuelAvatar
             if (t >= 1f)
             {
                 moving.WorldPlant = moving.StepTarget; moving.WorldRotation = moving.StepRotation;
-                moving.Moving = false; landingLeg = movingLeg; movingLeg = -1;
+                moving.Moving = false; landedThisTick = landingLeg = movingLeg; movingLeg = -1;
                 Stepped = !suppressRecoveryEffects; recoveryLandings++;
                 StepPosition = moving.WorldPlant;
             }
         }
-        if (movingLeg < 0 && !stepping && legs.Length > 0)
+        if (movingLeg < 0 && !stepping && legs.Length > 0 && dt > 0f)
         {
             int candidate = -1;
             for (int offset = 0; offset < legs.Length; offset++)
@@ -624,6 +625,10 @@ public sealed class DuelAvatar
         for (int pass = 0; pass < 12; pass++)
             foreach (Leg leg in legs)
             {
+                // During recovery the planted support determines the pelvis.
+                // The airborne foot can shorten its stride instead of pulling
+                // the pelvis away from that fixed ground contact.
+                if (recoveringFeet && (leg.Moving || landedThisTick >= 0 && leg == legs[landedThisTick])) continue;
                 Vector3 target = leg.WorldPlant + (leg == legs[0] && movingLeg < 0 ? Vector3.up * stepLift : Vector3.zero);
                 Vector3 delta = leg.Upper.position - target;
                 float reach = leg.UpperLength + leg.LowerLength - 0.004f;
@@ -644,6 +649,22 @@ public sealed class DuelAvatar
         {
             Leg leg = legs[i];
             Vector3 target = leg.WorldPlant + (i == 0 && movingLeg < 0 ? Vector3.up * stepLift : Vector3.zero);
+            if (recoveringFeet && (leg.Moving || i == landedThisTick))
+            {
+                // A fast push can stop between swing samples. Keep the airborne
+                // foot inside the now-bounded pelvis's reach, retaining its
+                // authored height and leaving the supporting contact anchored.
+                Vector3 hip = leg.Upper.position;
+                float reach = leg.UpperLength + leg.LowerLength - .004f;
+                if (leg.Moving) target.y = Mathf.Max(target.y, hip.y - reach);
+                float height = target.y - hip.y;
+                float planarReach = Mathf.Sqrt(Mathf.Max(0f, reach * reach - height * height));
+                Vector3 offset = new Vector3(target.x - hip.x, 0f, target.z - hip.z);
+                Vector3 bounded = hip + Vector3.ClampMagnitude(offset, planarReach);
+                target.x = bounded.x; target.z = bounded.z;
+                leg.WorldPlant = target;
+                if (i == landedThisTick) { leg.StepTarget = leg.WorldPlant; StepPosition = leg.WorldPlant; }
+            }
             SolveLeg(leg, target, kneeReaction);
         }
     }
@@ -765,18 +786,25 @@ public sealed class DuelAvatar
     {
         Vector3 hip = leg.Upper.position;
         Vector3 direction = target - hip;
-        float distance = Mathf.Clamp(direction.magnitude, Mathf.Abs(leg.UpperLength - leg.LowerLength) + 0.0001f,
-            leg.UpperLength + leg.LowerLength - 0.0001f);
         direction.Normalize();
         Vector3 kneePole = leg.KneePole + Vector3.right * (Mathf.Sign(leg.Plant.x) * .4f * kneeReaction);
         Vector3 pole = Vector3.ProjectOnPlane(player.TransformDirection(kneePole), direction).normalized;
         if (pole.sqrMagnitude < 0.1f) pole = player.right;
-        float along = (leg.UpperLength * leg.UpperLength - leg.LowerLength * leg.LowerLength + distance * distance) / (2f * distance);
-        float height = Mathf.Sqrt(Mathf.Max(0f, leg.UpperLength * leg.UpperLength - along * along));
-        Vector3 knee = hip + direction * along + pole * height;
-        leg.Upper.rotation = Quaternion.FromToRotation(leg.Lower.position - hip, knee - hip) * leg.Upper.rotation;
-        Vector3 end = hip + direction * distance;
-        leg.Lower.rotation = Quaternion.FromToRotation(leg.Ankle.position - leg.Lower.position, end - leg.Lower.position) * leg.Lower.rotation;
+        // Imported skeletons have non-uniform parent scales. As with the arms,
+        // refine against posed lengths rather than the rest-pose measurements.
+        for (int iteration = 0; iteration < 6; iteration++)
+        {
+            float upperLength = Vector3.Distance(leg.Upper.position, leg.Lower.position);
+            float lowerLength = Vector3.Distance(leg.Lower.position, leg.Ankle.position);
+            float distance = Mathf.Clamp(Vector3.Distance(hip, target), Mathf.Abs(upperLength - lowerLength) + .0001f,
+                upperLength + lowerLength - .0001f);
+            float along = (upperLength * upperLength - lowerLength * lowerLength + distance * distance) / (2f * distance);
+            float height = Mathf.Sqrt(Mathf.Max(0f, upperLength * upperLength - along * along));
+            Vector3 knee = hip + direction * along + pole * height;
+            leg.Upper.rotation = Quaternion.FromToRotation(leg.Lower.position - hip, knee - hip) * leg.Upper.rotation;
+            Vector3 end = hip + direction * distance;
+            leg.Lower.rotation = Quaternion.FromToRotation(leg.Ankle.position - leg.Lower.position, end - leg.Lower.position) * leg.Lower.rotation;
+        }
         leg.Ankle.rotation = leg.WorldRotation;
     }
 
