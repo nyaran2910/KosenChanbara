@@ -96,6 +96,32 @@ public sealed class ControllerRegistrationPlayTests
         Call(phone, "HandleDataChannelMessage", slot, Encoding.UTF8.GetBytes($"{{\"type\":\"axis.state\",\"request\":{request},\"order\":{order},\"signs\":{signs}}}"));
     }
     [UnityTest]
+    public IEnumerator AxisPreviewPreservesCalibratedBladePoseAndConfiguredGyroscope()
+    {
+        object slot = SupplyPhone();
+        Quaternion pose = Quaternion.Euler(-65f, 32f, 19f);
+        sensors[0].GetType().GetProperty("CurrentLocalRotation").SetValue(sensors[0], pose);
+        Call(wizard, "TickSword");
+        RectTransform blade = Field<RectTransform>(wizard, "sword");
+        Assert.That(Vector3.Angle(blade.localRotation * Vector3.up, pose * Vector3.forward), Is.LessThan(.01f));
+        Assert.That(blade.sizeDelta.y, Is.EqualTo(210f));
+        // A stationary packet orientation isolates the configured gyro from the
+        // world-frame menu projection, which would cancel an axis swap.
+        for (int i = -1; i < 3; i++)
+        {
+            Vector3 gyro = i == 2 ? Vector3.right * 500f : Vector3.up * (i == 0 ? 500f : -500f);
+            object sample = Activator.CreateInstance(Runtime("MotionSample"), new object[] {
+                Quaternion.Euler(0f, 0f, 90f), gyro, Vector3.zero, false, true, true, true,
+                (uint)(i + 2), (ushort)0, 20d + i * 10d, Time.realtimeSinceStartupAsDouble, false });
+            Set(slot, "LatestSample", sample);
+            Call(sensors[0], "Update");
+            Call(wizard, "TickSword");
+            if (i < 0) continue;
+            Assert.That(Field<Text>(wizard, "feedback").text, Is.EqualTo(i == 0 ? "→ 右" : i == 1 ? "← 左" : "↓ 下"));
+        }
+        yield return null;
+    }
+    [UnityTest]
     public IEnumerator PhoneOffersSixOrdersAndIndividualSignsAndWaitsForCommitAcknowledgement()
     {
         object slot = SupplyPhone();

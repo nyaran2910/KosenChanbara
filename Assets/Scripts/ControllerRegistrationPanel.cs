@@ -201,11 +201,13 @@ public sealed class ControllerRegistrationPanel : MonoBehaviour
     {
         if (sword == null || sensors[player] == null) return;
         MotionController sensor = sensors[player];
-        Vector3 tip = sensor.CurrentLocalRotation * Vector3.forward;
-        sword.localEulerAngles = new Vector3(0, 0, Mathf.Atan2(tip.z, tip.x) * Mathf.Rad2Deg - 90);
-        sword.sizeDelta = new Vector2(18, Mathf.Max(8, new Vector2(tip.x, tip.z).magnitude * 210));
+        // The UI blade extends along +Y; the game blade extends along +Z.
+        // Preserve the full calibrated pose, including tilt and twist.
+        sword.localRotation = sensor.CurrentLocalRotation * Quaternion.Euler(90f, 0f, 0f);
         MotionSample sample = default; bool fresh = sensor.IsPoseValid && sensor.TryGetMenuSample(out sample);
-        Vector2Int movement = direction.Read(sample.Rotation, sample.AngularVelocityDegrees, sample.GyroscopeValid, fresh, fresh ? sample.BrowserTimestampMilliseconds / 1000d : double.NaN, sensor != null && sensor.ActiveSource == ControllerInputSource.Phone);
+        // Inspect configured local axes here. The phone world-frame menu
+        // conversion cancels axis remapping and hides the adjustment.
+        Vector2Int movement = direction.Read(sample.Rotation, sample.AngularVelocityDegrees, sample.GyroscopeValid, fresh, fresh ? sample.BrowserTimestampMilliseconds / 1000d : double.NaN);
         if (movement != Vector2Int.zero) feedback.text = movement == Vector2Int.up ? "↑ 上" : movement == Vector2Int.down ? "↓ 下" : movement == Vector2Int.left ? "← 左" : "→ 右";
     }
     private void Build(string title, string message)
